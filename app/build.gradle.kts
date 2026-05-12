@@ -1,13 +1,6 @@
 import java.io.FileInputStream
 import java.util.Properties
 
-val keystorePropertiesFile = rootProject.file("keystore.properties")
-val useKeystoreProperties = keystorePropertiesFile.canRead()
-val keystoreProperties = Properties()
-if (useKeystoreProperties) {
-    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
-}
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -21,6 +14,13 @@ java {
 }
 
 android {
+    val keystorePropertiesFile = rootProject.file("keystore.properties")
+    val useKeystoreProperties = keystorePropertiesFile.canRead()
+    val keystoreProperties = Properties()
+    if (useKeystoreProperties) {
+        keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+    }
+
     if (useKeystoreProperties) {
         signingConfigs {
             create("release") {
@@ -46,8 +46,7 @@ android {
         versionName = versionCode.toString()
 
         ndk {
-            abiFilters.clear()
-            abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
+            abiFilters.retainAll(listOf("arm64-v8a", "x86_64"))
         }
     }
 
@@ -56,7 +55,9 @@ android {
     }
 
     androidResources {
+        @Suppress("UnstableApiUsage")
         generateLocaleConfig = true
+        @Suppress("UnstableApiUsage")
         localeFilters += listOf("en")
         noCompress += "onnx"
     }
@@ -72,7 +73,7 @@ android {
             isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
             )
             if (useKeystoreProperties) {
                 signingConfig = signingConfigs.getByName("release")
@@ -81,7 +82,6 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
-            signingConfig = signingConfigs.getByName("debug")
         }
         create("staging") {
             initWith(getByName("release"))
