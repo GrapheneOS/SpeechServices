@@ -31,7 +31,7 @@ class CheckTtsDataActivity : Activity() {
         }.toSet()
         result.putStringArrayListExtra(
             TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES,
-            ArrayList(availableVoices)
+            ArrayList(availableVoices),
         )
         setResult(TextToSpeech.Engine.CHECK_VOICE_DATA_PASS, result)
         finish()

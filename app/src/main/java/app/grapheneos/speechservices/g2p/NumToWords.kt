@@ -12,13 +12,13 @@ enum class NumToWordsRuleSet(val value: String) {
     Ordinal("%spellout-ordinal"),
     Cardinal("%spellout-cardinal"),
     Numbering("%spellout-numbering"),
-    NumberingYear("%spellout-numbering-year")
+    NumberingYear("%spellout-numbering-year"),
 }
 
 fun numToWords(
     num: String,
     ruleSet: NumToWordsRuleSet = NumToWordsRuleSet.Cardinal,
-    locale: Locale
+    locale: Locale,
 ): String {
     val numberFormat =
         RuleBasedNumberFormat(ULocale.forLocale(locale), RuleBasedNumberFormat.SPELLOUT)
@@ -31,6 +31,8 @@ fun numToWords(
         return numberFormat.format(numAsDouble, ruleSet.value)
     }
     Log.w(TAG, "Failed to convert number to words, returning empty String")
-    verboseLog(TAG) { "Failed number to words parameters: num: $num, ruleSet: $ruleSet, locale: $locale" }
+    verboseLog(TAG) {
+        "Failed number to words parameters: num: $num, ruleSet: $ruleSet, locale: $locale"
+    }
     return ""
 }
