@@ -3,6 +3,7 @@ activityCompose = "1.13.0"
 agp = "9.2.1"
 composeBom = "2026.05.00"
 coreKtx = "1.18.0"
+detekt = "2.0.0-alpha.3"
 icu4j = "78.3"
 kotlin = "2.3.21"
 kotlinx-serialization = "1.11.0"
@@ -33,6 +34,7 @@ slf4j-nop = { group = "org.slf4j", name = "slf4j-nop", version.ref = "slf4j" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+detekt = { id = "dev.detekt", version.ref = "detekt" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint-gradle" }

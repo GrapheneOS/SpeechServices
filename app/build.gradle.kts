@@ -3,6 +3,7 @@ import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.detekt)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
@@ -11,6 +12,14 @@ java {
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(17))
     }
+}
+
+detekt {
+    basePath.set(rootDir)
+    buildUponDefaultConfig = true
+    config.setFrom(rootProject.file("detekt.yml"))
+    ignoredBuildTypes = listOf("release")
+    parallel = true
 }
 
 android {
