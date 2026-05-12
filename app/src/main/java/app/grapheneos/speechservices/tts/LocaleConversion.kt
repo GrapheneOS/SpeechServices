@@ -57,9 +57,9 @@ private val deprecatedToModernCountry by lazy {
  * This method tries to convert three-letter language and country codes into their two-letter
  * equivalents. If it fails to do so, it keeps the value from the TTS locale.
  */
-fun deprecatedLocaleToModern(lang: String?, country: String?, variant: String?): Locale {
+fun deprecatedLocaleToModern(lang: String, country: String?, variant: String?): Locale {
     val localeBuilder = Locale.Builder()
-    if (!lang.isNullOrEmpty()) {
+    if (!lang.isEmpty()) {
         val normalizedLanguage = deprecatedToModernLanguage[lang]
         if (normalizedLanguage != null) {
             localeBuilder.setLanguage(normalizedLanguage)
