@@ -184,8 +184,8 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
         return supportedVoices
     }
 
-    override fun onIsValidVoiceName(voiceName: String?): Int {
-        return if (voiceName != null && isVoiceAvailable(voiceName)) {
+    override fun onIsValidVoiceName(voiceName: String): Int {
+        return if (isVoiceAvailable(voiceName)) {
             TextToSpeech.SUCCESS
         } else {
             TextToSpeech.ERROR
@@ -337,12 +337,8 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
         }
     }
 
-    override fun onLoadVoice(voiceName: String?): Int {
+    override fun onLoadVoice(voiceName: String): Int {
         Log.d(TAG, "onLoadVoice parameters: voiceName: $voiceName")
-
-        if (voiceName == null) {
-            return TextToSpeech.ERROR
-        }
 
         runBlocking {
             loadVoiceInBackground(voiceName)
@@ -352,7 +348,7 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
     }
 
     override fun onGetDefaultVoiceNameFor(
-        lang: String?,
+        lang: String,
         country: String?,
         variant: String?
     ): String? {
@@ -363,7 +359,7 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
         return isLanguageAvailableWithDefaultVoiceName(lang, country, variant).second
     }
 
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
+    override fun onIsLanguageAvailable(lang: String, country: String?, variant: String?): Int {
         verboseLog(TAG) {
             "onIsLanguageAvailable parameters: lang: $lang, country: $country, variant: $variant"
         }
@@ -371,7 +367,7 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
         return isLanguageAvailableWithDefaultVoiceName(lang, country, variant).first
     }
 
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
+    override fun onLoadLanguage(lang: String, country: String?, variant: String?): Int {
         Log.d(TAG, "onLoadLanguage parameters: lang: $lang, country: $country, variant: $variant")
 
         val (languageAvailability, defaultVoiceName) = isLanguageAvailableWithDefaultVoiceName(
@@ -396,7 +392,7 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
         return languageAvailability
     }
 
-    override fun onGetLanguage(): Array<out String?> {
+    override fun onGetLanguage(): Array<String> {
         Log.w(
             TAG, "onGetLanguage called, returning emptyArray(). Method is not supposed " +
                     "to be called on modern Android versions (API > 17)."
@@ -405,15 +401,15 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
     }
 
     @androidx.annotation.OptIn(UnstableApi::class)
-    override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
+    override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         verboseLog(TAG) {
-            "onSynthesizeText parameters: charSequenceText: ${request?.charSequenceText}, " +
-                    "voiceName: ${request?.voiceName}, language: ${request?.language}, " +
-                    "country: ${request?.country}, variant: ${request?.variant}, " +
-                    "speechRate: ${request?.speechRate}, pitch: ${request?.pitch}, " +
-                    "params?.keySet(): ${request?.params?.keySet()}, " +
-                    "callerUid: ${request?.callerUid}, " +
-                    "callback?.maxBufferSize: ${callback?.maxBufferSize}"
+            "onSynthesizeText parameters: charSequenceText: ${request.charSequenceText}, " +
+                    "voiceName: ${request.voiceName}, language: ${request.language}, " +
+                    "country: ${request.country}, variant: ${request.variant}, " +
+                    "speechRate: ${request.speechRate}, pitch: ${request.pitch}, " +
+                    "params.keySet(): ${request.params.keySet()}, " +
+                    "callerUid: ${request.callerUid}, " +
+                    "callback.maxBufferSize: ${callback.maxBufferSize}"
         }
 
         lateinit var currentJob: Job
@@ -431,12 +427,6 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
 
             currentJob = CoroutineScope(Dispatchers.IO).launch(start = CoroutineStart.LAZY) {
                 try {
-                    if (request == null || callback == null) {
-                        Log.d(TAG, "request or callback was null")
-                        callback?.error(TextToSpeech.ERROR_INVALID_REQUEST)
-                        return@launch
-                    }
-
                     var timeToFirstAudio: Long? = null
                     val startTime = SystemClock.elapsedRealtime()
 
@@ -708,7 +698,7 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
                         return@launch
                     }
                 } finally {
-                    callback?.done()
+                    callback.done()
                 }
             }
             synthesizeTextJob = currentJob
