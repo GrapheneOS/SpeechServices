@@ -17,6 +17,36 @@ inline fun verboseLog(tag: String, msg: () -> String) {
     }
 }
 
+inline fun <T> verboseLogTime(tag: String, prefix: String, block: () -> T): T {
+    val res: T
+    val time = measureTimeMillis {
+        res = block()
+    }
+    verboseLog(tag) { "$prefix took $time ms" }
+    return res
+}
+
+fun String.toBitSet(): BitSet {
+    val bitSet = BitSet(128)
+    for (ch in this) {
+        bitSet.set(ch.code)
+    }
+    return bitSet
+}
+
+operator fun BitSet.contains(ch: Char) = get(ch.code)
+
+fun String.hasNoneOf(chars: BitSet): Boolean {
+    return none { it in chars }
+}
+
+fun String.isOneOf(a: String, b: String): Boolean {
+    return this == a || this == b
+}
+
+fun String.isOneOf(a: String, b: String, c: String): Boolean {
+    return this == a || this == b || this == c
+}
 
 fun allocateDirectFloatBuffer(capacity: Int): FloatBuffer {
     return ByteBuffer.allocateDirect(

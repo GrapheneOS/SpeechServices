@@ -5,10 +5,18 @@
 package app.grapheneos.speechservices.g2p
 
 import android.icu.lang.UCharacter
+import androidx.collection.buildIntObjectMap
+import app.grapheneos.speechservices.contains
 import app.grapheneos.speechservices.g2p.fallback_network.FallbackNetwork
+import app.grapheneos.speechservices.hasNoneOf
+import app.grapheneos.speechservices.isOneOf
+import app.grapheneos.speechservices.toBitSet
+import app.grapheneos.speechservices.tts.CancellationCheck
 import app.grapheneos.speechservices.verboseLog
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
+import java.text.Normalizer
+import java.util.BitSet
+import java.util.Locale
+import kotlin.math.absoluteValue
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -27,9 +35,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import opennlp.tools.postag.POSTaggerME
 import opennlp.tools.tokenize.TokenizerME
 import opennlp.tools.util.Span
-import java.text.Normalizer
-import java.util.Locale
-import kotlin.math.absoluteValue
 
 private const val TAG: String = "EnglishPhonemizer"
 
@@ -95,11 +100,11 @@ fun mergeTokens(tokens: List<MToken>, unk: String? = null): MToken {
     )
 }
 
-val DIPHTHONGS = "AIOQWYʤʧ".toSet()
+private val DIPHTHONGS = "AIOQWYʤʧ".toBitSet()
 fun stressWeight(phonemes: String?): Int {
     return if (!phonemes.isNullOrEmpty()) {
         phonemes.sumOf { char ->
-            if (DIPHTHONGS.contains(char)) {
+            if (char in DIPHTHONGS) {
                 2
             } else {
                 1
@@ -124,103 +129,121 @@ fun findSubtokens(word: String): Sequence<MatchResult> {
 val LINK_REGEX = Regex("""\[([^]]+)]\(([^)]*)\)""")
 
 // TODO: Handle '' quotes (needs context because ' is also used as an apostrophe).
-val SUBTOKEN_JUNKS = """',-._‘’/""".toSet()
-val PUNCTS = """;:,.!?—…"“”()""".toSet()
-val NON_QUOTE_PUNCTS =
-    PUNCTS.mapNotNull { if (!""""“”""".contains(it)) it.toString() else null }.toSet()
+val SUBTOKEN_JUNKS = """',-._‘’/""".toBitSet()
+val PUNCTS = """;:,.!?—…"“”()""".toBitSet()
+private val QUOTE_PUNCTS = """"“”""".toBitSet()
+val NON_QUOTE_PUNCTS = (PUNCTS.clone() as BitSet).apply {
+    andNot(QUOTE_PUNCTS)
+}
 
-val PUNCTS_REPLACEMENTS = mutableMapOf(
-    '“' to '"',
-    '”' to '"',
-    '…' to "...",
-)
+val PUNCTS_REPLACEMENTS = buildIntObjectMap {
+    put('“'.code, "\"")
+    put('”'.code, "\"")
+    put('…'.code, "...")
+}
 
-val LEXICON_ORDS = listOf(39, 45) + (65..91) + (97..123)
-val CONSONANTS = "bdfhjklmnpstvwzðŋɡɹɾʃʒʤʧθ".toSet()
+private val LEXICON_ORDS = BitSet(128).apply {
+    set(39)
+    set(45)
+    set(65, 91)
+    set(97, 123)
+}
+
+private val CONSONANTS = "bdfhjklmnpstvwzðŋɡɹɾʃʒʤʧθ".toBitSet()
 
 // EXTENDER = 'ː'
-val US_TAUS = "AIOWYiuæɑəɛɪɹʊʌ".toSet()
+private val US_TAUS = "AIOWYiuæɑəɛɪɹʊʌ".toBitSet()
 
-val CURRENCIES = mutableMapOf(
+private val CURRENCIES = mutableMapOf(
     "$" to listOf("dollar", "cent"),
     "£" to listOf("pound", "pence"),
     "€" to listOf("euro", "cent"),
 )
-val ORDINALS = setOf("st", "nd", "rd", "th")
+private val ORDINALS = setOf("st", "nd", "rd", "th")
 
-val PUNCT_SYMBOLS = mutableMapOf(
+private val PUNCT_SYMBOLS = mapOf(
     "." to "dot",
     "/" to "slash",
     "_" to "underscore",
 )
-val SYMBOLS = mutableMapOf(
+private val SYMBOLS = mapOf(
     "%" to "percent",
     "&" to "and",
     "+" to "plus",
     "@" to "at",
 )
 
-val US_VOCAB = "AIOWYbdfhijklmnpstuvwzæðŋɑɔəɛɜɡɪɹɾʃʊʌʒʤʧˈˌθᵊᵻʔ".toSet() // ɐ
-val GB_VOCAB = "AIQWYabdfhijklmnpstuvwzðŋɑɒɔəɛɜɡɪɹʃʊʌʒʤʧˈˌːθᵊ".toSet() // ɐ
+private val US_VOCAB = "AIOWYbdfhijklmnpstuvwzæðŋɑɔəɛɜɡɪɹɾʃʊʌʒʤʧˈˌθᵊᵻʔ".toBitSet() // ɐ
+private val GB_VOCAB = "AIQWYabdfhijklmnpstuvwzðŋɑɒɔəɛɜɡɪɹʃʊʌʒʤʧˈˌːθᵊ".toBitSet() // ɐ
 
-const val STRESSES = "ˌˈ"
-const val PRIMARY_STRESS = STRESSES[1]
-const val SECONDARY_STRESS = STRESSES[0]
-val VOWELS = "AIOQWYaiuæɑɒɔəɛɜɪʊʌᵻ".toSet()
+private const val PRIMARY_STRESS = 'ˈ'
+private const val SECONDARY_STRESS = 'ˌ'
+private val STRESSES = ("" + SECONDARY_STRESS + PRIMARY_STRESS).toBitSet()
+private val VOWELS = "AIOQWYaiuæɑɒɔəɛɜɪʊʌᵻ".toBitSet()
+
+private val VOWELS_OR_CONSONANTS_OR_NON_QUOTE_PUNCTS = BitSet().apply {
+    or(VOWELS)
+    or(CONSONANTS)
+    or(NON_QUOTE_PUNCTS)
+}
+
 fun applyStress(phonemes: String?, stress: Double?): String? {
     fun restress(phonemes: String): String {
-        val indexedPhonemes: MutableList<Pair<Double, Char>> =
-            phonemes.mapIndexed { index, phoneme ->
-                Pair(index.toDouble(), phoneme)
-            }.toMutableList()
-        val stresses =
-            indexedPhonemes.filter { STRESSES.contains(it.second) }.map { (stressIndex, _) ->
-                val nextVowel = indexedPhonemes.filter { (phonemeIndex, _) ->
-                    phonemeIndex >= stressIndex
-                }.first { (_, potentialVowel) ->
-                    VOWELS.contains(potentialVowel)
+        return buildString(phonemes.length) {
+            var pendingStress = 0.toChar()
+
+            for (ch in phonemes) {
+                if (ch in STRESSES) {
+                    pendingStress = ch
+                    continue
                 }
-                stressIndex to nextVowel.first
+                if (pendingStress != 0.toChar() && ch in VOWELS) {
+                    append(pendingStress)
+                    pendingStress = 0.toChar()
+                }
+                append(ch)
             }
-        for ((stressIndex, vowelIndex) in stresses) {
-            val (_, stressChar) = indexedPhonemes[stressIndex.toInt()]
-            indexedPhonemes[stressIndex.toInt()] = Pair(vowelIndex - 0.5, stressChar)
+
+            check(pendingStress == 0.toChar()) { "leftover stress in $phonemes" }
         }
-        return indexedPhonemes.toSortedSet { o1, o2 -> o1.first.compareTo(o2.first) }
-            .joinToString("") { it.second.toString() }
     }
+    if (phonemes == null) {
+        return null
+    }
+
     if (stress == null) {
         return phonemes
     } else if (stress < -1) {
-        return phonemes?.replace(PRIMARY_STRESS.toString(), "")
-            ?.replace(SECONDARY_STRESS.toString(), "")
-    } else if (stress.toInt() == -1 || (stress in setOf(0, -0.5) && phonemes?.contains(
-            PRIMARY_STRESS
-        ) == true)
+        return phonemes.filterNot { it == PRIMARY_STRESS || it == SECONDARY_STRESS }
+    } else if (stress == -1.0 ||
+        ((stress == 0.0 || stress == -0.5) && PRIMARY_STRESS in phonemes)
     ) {
-        return phonemes?.replace(SECONDARY_STRESS.toString(), "")
-            ?.replace(PRIMARY_STRESS, SECONDARY_STRESS)
-    } else if (stress in setOf(0, 0.5, 1) && STRESSES.all { s -> phonemes?.contains(s) != true }) {
-        if (VOWELS.all { v -> phonemes?.contains(v) != true }) {
+        return phonemes.replace(SECONDARY_STRESS.toString(), "")
+            .replace(PRIMARY_STRESS, SECONDARY_STRESS)
+    } else if ((stress == 0.0 || stress == 0.5 || stress == 1.0) &&
+        (phonemes.hasNoneOf(STRESSES))
+    ) {
+        if (phonemes.hasNoneOf(VOWELS)) {
             return phonemes
         }
-        return restress(SECONDARY_STRESS + phonemes.orEmpty())
-    } else if (stress >= 1 && phonemes?.contains(PRIMARY_STRESS) != true && phonemes?.contains(
-            SECONDARY_STRESS
-        ) == true
-    ) {
+        return restress(SECONDARY_STRESS + phonemes)
+    } else if (stress >= 1 && PRIMARY_STRESS !in phonemes && SECONDARY_STRESS in phonemes) {
         return phonemes.replace(SECONDARY_STRESS, PRIMARY_STRESS)
-    } else if (stress > 1 && STRESSES.all { s -> phonemes?.contains(s) != true }) {
-        if (VOWELS.all { v -> phonemes?.contains(v) != true }) {
+    } else if (stress > 1 && phonemes.hasNoneOf(STRESSES)) {
+        if (phonemes.hasNoneOf(VOWELS)) {
             return phonemes
         }
-        return restress(PRIMARY_STRESS + phonemes.orEmpty())
+        return restress(PRIMARY_STRESS + phonemes)
     }
     return phonemes
 }
 
-fun isDigit(text: String): Boolean {
-    return Regex("""^[0-9]+$""").matches(text)
+fun Char.isAsciiDigit(): Boolean {
+    return this >= '0' && this <= '9'
+}
+
+fun isAsciiNumber(text: String): Boolean {
+    return text.all { it.isAsciiDigit() }
 }
 
 class DictionaryValueSerializer : KSerializer<DictionaryValue> {
@@ -288,7 +311,6 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         return e + dictionary
     }
 
-    val capStresses: List<Double> = listOf(0.5, 2.0)
     val golds: Map<String, DictionaryValue> = this.growDictionary(initialDictionary)
 
     init {
@@ -329,7 +351,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                     null -> null
                 }
             }.joinToString(""),
-            0.0
+            0.0,
         )
         val lastIndexOfSecondaryStress = appliedStressPhonemes?.lastIndexOf(SECONDARY_STRESS)
         val result = if (lastIndexOfSecondaryStress == -1 || lastIndexOfSecondaryStress == null) {
@@ -362,17 +384,17 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 ) < 3
         ) {
             return this.getPropn(word)
-        } else if (word in setOf("a", "A")) {
+        } else if (word.isOneOf("a", "A")) {
             return Pair(
                 if (tag == "DET") {
                     "ɐ"
                 } else {
                     "ˈA"
                 },
-                4
+                4,
             )
-        } else if (word in setOf("am", "Am", "AM")) {
-            if (tag in setOf("PROPN", "NOUN")) {
+        } else if (word.isOneOf("am", "Am", "AM")) {
+            if (tag.isOneOf("PROPN", "NOUN")) {
                 return this.getPropn(word)
             } else if (ctx.futureVowel == null || word != "am" || (stress != null && stress > 0)) {
                 this.golds["am"]?.let { am ->
@@ -382,16 +404,16 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 }
             }
             return Pair("ɐm", 4)
-        } else if (word in setOf("an", "An", "AN")) {
-            if (word == "AN" && tag in setOf("PROPN", "NOUN")) {
+        } else if (word.isOneOf("an", "An", "AN")) {
+            if (word == "AN" && tag.isOneOf("PROPN", "NOUN")) {
                 return this.getPropn(word)
             }
             return Pair("ɐn", 4)
         } else if (word == "I" && tag == "PRON") {
             return Pair("${SECONDARY_STRESS}I", 4)
-        } else if (word in setOf("by", "By", "BY") && tag == "ADV") {
+        } else if (word.isOneOf("by", "By", "BY") && tag == "ADV") {
             return Pair("bˈI", 4)
-        } else if (word in setOf("to", "To") || (word == "TO" && tag in setOf("ADP", "SCONJ"))) {
+        } else if (word.isOneOf("to", "To") || (word == "TO" && tag.isOneOf("ADP", "SCONJ"))) {
             this@Lexicon.golds["to"]?.let { to ->
                 if (to is DictionaryValue.StringValue) {
                     val map = mutableMapOf(
@@ -402,28 +424,28 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                     return Pair(map[ctx.futureVowel], 4)
                 }
             }
-        } else if (word in setOf("in", "In") || (word == "IN" && tag != "PROPN")) {
-            val stress = if (ctx.futureVowel == null || tag !in setOf("ADP", "SCONJ")) {
+        } else if (word.isOneOf("in", "In") || (word == "IN" && tag != "PROPN")) {
+            val stress = if (ctx.futureVowel == null || !tag.isOneOf("ADP", "SCONJ")) {
                 PRIMARY_STRESS.toString()
             } else {
                 ""
             }
             return Pair(stress + "ɪn", 4)
-        } else if (word in setOf("the", "The") || (word == "THE" && tag == "DET")) {
+        } else if (word.isOneOf("the", "The") || (word == "THE" && tag == "DET")) {
             return Pair(
                 if (ctx.futureVowel == true) {
                     "ði"
                 } else {
                     "ðə"
                 },
-                4
+                4,
             )
         } else if (tag == "IN" && Regex("""(?i)vs\.?$""").matches(word)) {
             return this.lookup("versus", null, null, ctx)
-        } else if (word in setOf("used", "Used", "USED")) {
+        } else if (word.isOneOf("used", "Used", "USED")) {
             val used = this.golds["used"]
             if (used is DictionaryValue.MapValue) {
-                if (tag in setOf("VERB", "ADJ") && ctx.futureTo == true) {
+                if (tag.isOneOf("VERB", "ADJ") && ctx.futureTo == true) {
                     used.value["VBD"]?.let { vbd ->
                         return Pair(vbd, 4)
                     }
@@ -436,10 +458,13 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         return Pair(null, null)
     }
 
+    @Suppress("UnusedParameter")
     fun isKnown(word: String?, tag: String?): Boolean {
         if (word in this.golds || word in SYMBOLS) {
             return true
-        } else if (!word.let { !it.isNullOrEmpty() && it.all { c -> c.isLetter() } } || word?.all { c -> c.code in LEXICON_ORDS } ?: true) {
+        } else if (!word.let { !it.isNullOrEmpty() && it.all { c -> c.isLetter() } } ||
+            word?.all { c -> c in LEXICON_ORDS } ?: true
+        ) {
             return false // TODO: café
         } else if (word.length == 1) {
             return true
@@ -566,7 +591,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
             return stem + 'd'
         } else if (this.british || stem.length < 2) {
             return stem + "ɪd"
-        } else if (stem.getOrNull(stem.length - 2) in US_TAUS) {
+        } else if (stem[stem.length - 2] in US_TAUS) {
             return stem.dropLast(1) + "ɾᵻd"
         }
         return stem + "ᵻd"
@@ -758,24 +783,31 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                     num
                 } else {
                     numToWords(num, locale = Locale.ENGLISH)
-                }
+                },
             )
-            for ((splitWordIndex, splitWord) in splits.withIndex()) {
+            splits.forEachIndexed { splitWordIndex, splitWord ->
                 if (splitWord != "and" || numFlags?.contains('&') == true) {
-                    if (first && splitWordIndex == 0 && splits.size > 1 && splitWord == "one" && numFlags?.contains(
-                            'a'
+                    if (first &&
+                        splitWordIndex == 0 &&
+                        splits.size > 1 &&
+                        splitWord == "one" &&
+                        numFlags?.contains(
+                            'a',
                         ) == true
                     ) {
                         result.add(Pair("ə", 4))
                     } else {
                         result.add(
                             this.lookup(
-                                splitWord, null, if (splitWord == "point") {
+                                splitWord,
+                                null,
+                                if (splitWord == "point") {
                                     -2.0
                                 } else {
                                     null
-                                }, null
-                            )
+                                },
+                                null,
+                            ),
                         )
                     }
                 } else if (numFlags?.contains('n') == true && result.isNotEmpty()) {
@@ -784,12 +816,16 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 }
             }
         }
-        if (isDigit(word) && suffix in ORDINALS) {
+        if (isAsciiNumber(word) && suffix in ORDINALS) {
             extendNum(numToWords(word, NumToWordsRuleSet.Ordinal, Locale.ENGLISH), escape = true)
-        } else if (result.isEmpty() && word.length == 4 && currency !in CURRENCIES && isDigit(word)) {
+        } else if (result.isEmpty() &&
+            word.length == 4 &&
+            currency !in CURRENCIES &&
+            isAsciiNumber(word)
+        ) {
             extendNum(
                 numToWords(word, NumToWordsRuleSet.NumberingYear, Locale.ENGLISH),
-                escape = true
+                escape = true,
             )
         } else if ((isHead == null || !isHead) && '.' !in word) {
             val num = word.replace(",", "")
@@ -843,7 +879,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                     pairs = pairs.drop(1)
                 }
             }
-            for ((index, pair) in pairs.withIndex()) {
+            pairs.forEachIndexed { index, pair ->
                 val (num, unit) = pair
                 if (index > 0) {
                     result.add(this.lookup("and", null, null, null))
@@ -854,11 +890,11 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                         this.stemS(unit + "s", null, null, null)
                     } else {
                         this.lookup(unit, null, null, null)
-                    }
+                    },
                 )
             }
         } else {
-            if (isDigit(word)) {
+            if (isAsciiNumber(word)) {
                 word = numToWords(word, locale = Locale.ENGLISH)
             } else if ('.' !in word) {
                 word = numToWords(
@@ -922,50 +958,67 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         }
     }
 
-    fun numericIfNeeded(char: Char): String {
+    private fun numericIfNeeded(char: Char, dst: StringBuilder) {
         if (!char.isDigit()) {
-            return char.toString()
+            dst.append(char)
+            return
         }
         val numericValue = Character.getNumericValue(char)
-        return if (numericValue != -1 && numericValue != -2) {
+        if (numericValue >= 0) {
+            dst.append(numericValue)
             numericValue.toString()
         } else {
-            char.toString()
+            dst.append(char)
         }
     }
 
-    fun isNumber(word: String?, isHead: Boolean?): Boolean {
+    private val numberSuffixes = ORDINALS + setOf("ing", "'d", "ed", "'s", "s")
+
+    fun isNumber(word: String, isHead: Boolean?): Boolean {
         var word = word
-        if (word?.all { c -> !isDigit(c.toString()) } ?: true) {
+        if (word.all { c -> !c.isAsciiDigit() }) {
             return false
         }
-        val suffixes = ORDINALS + setOf("ing", "'d", "ed", "'s", "s")
-        for (s in suffixes) {
-            if (word?.endsWith(s) ?: false) {
+        for (s in numberSuffixes) {
+            if (word.endsWith(s)) {
                 word = word.dropLast(s.length)
                 break
             }
         }
-        return word?.withIndex()?.all { (index, char) ->
-            isDigit(char.toString()) || char in ",." || (isHead == true && index == 0 && char == '-')
-        } ?: true
+        word.forEachIndexed { index, char ->
+            if (char.isAsciiDigit() ||
+                char in ",." ||
+                (isHead == true && index == 0 && char == '-')
+            ) {
+                return@forEachIndexed
+            }
+            return false
+        }
+        return true
     }
 
     fun main(tk: MToken, ctx: TokenContext): Pair<String?, Int?> {
-        var word = ((tk.more?.get("alias") as String?) ?: tk.text)
-            .replace(Char(8216).toString(), "'")
-            .replace(Char(8217).toString(), "'")
-        word = Normalizer.normalize(word, Normalizer.Form.NFKC)
-        word = word.flatMap { c -> this.numericIfNeeded(c).toList() }.joinToString("")
+        val word = ((tk.more?.get("alias") as String?) ?: tk.text)
+            .replace(Char(8216), '\'') // Left Single Quotation Mark ( ‘ )
+            .replace(Char(8217), '\'') // Right Single Quotation Mark ( ’ )
+            .run {
+                Normalizer.normalize(this, Normalizer.Form.NFKC)
+            }
+            .run {
+                val str = this
+                buildString(str.length) {
+                    val sb = this
+                    str.forEach { char ->
+                        numericIfNeeded(char, sb)
+                    }
+                }
+            }
+
         verboseLog(TAG) { "Lexicon main word: $word" }
         val stress = if (word == word.lowercase(Locale.ENGLISH)) {
             null
         } else {
-            this.capStresses[if (word == word.uppercase(Locale.ENGLISH)) {
-                1
-            } else {
-                0
-            }]
+            if (word == word.uppercase(Locale.ENGLISH)) 2.0 else 0.5
         }
         var (phonemes, rating) = this.getWord(word, tk.tag, stress, ctx)
         if (phonemes != null) {
@@ -990,7 +1043,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 rating = it.second
             }
             return Pair(applyStress(phonemes, tk.more?.get("stress") as Double?), rating)
-        } else if (!word.all { c -> c.code in LEXICON_ORDS }) {
+        } else if (!word.all { c -> c in LEXICON_ORDS }) {
             return Pair(null, null)
         }
         // unported Python code (commented out in the original so no need)
@@ -1016,26 +1069,26 @@ class EnglishPhonemizer(
     }
 
     fun preprocess(text: String): Triple<String, List<String>, Map<Int, FeatureValue>> {
-        var result = ""
+        val result = StringBuilder()
         val tokens = mutableListOf<String>()
         val features = mutableMapOf<Int, FeatureValue>()
         var lastEnd = 0
         val text = text.trimStart()
         for (m in LINK_REGEX.findAll(text)) {
-            result += text.substring(lastEnd, m.range.first)
+            result.append(text, lastEnd, m.range.first)
             tokens.addAll(text.substring(lastEnd, m.range.first).trim().split(Regex("""\\s+""")))
             val thirdGroupValue = m.groupValues[2]
             var feature: FeatureValue? = null
-            if (isDigit(
+            if (isAsciiNumber(
                     if (thirdGroupValue.take(1) in setOf("-", "+")) {
                         thirdGroupValue[1].toString()
                     } else {
                         thirdGroupValue
-                    }
+                    },
                 )
             ) {
                 feature = FeatureValue.IntValue(thirdGroupValue.toInt())
-            } else if (thirdGroupValue in setOf("0.5", "+0.5")) {
+            } else if (thirdGroupValue == "0.5" || thirdGroupValue == "+0.5") {
                 feature = FeatureValue.DoubleValue(0.5)
             } else if (thirdGroupValue == "-0.5") {
                 feature = FeatureValue.DoubleValue(-0.5)
@@ -1057,17 +1110,18 @@ class EnglishPhonemizer(
             if (feature != null) {
                 features[tokens.size] = feature
             }
-            result += m.groupValues[1]
+            result.append(m.groupValues[1])
             tokens.add(m.groupValues[1])
             lastEnd = m.range.last
         }
         if (lastEnd < text.length) {
-            result += text.drop(lastEnd)
+            result.append(text, lastEnd, text.length)
             tokens.addAll(text.drop(lastEnd).trim().split(Regex("""\\s+""")))
         }
-        return Triple(result, tokens, features)
+        return Triple(result.toString(), tokens, features)
     }
 
+    @Suppress("UnusedParameter")
     fun tokenize(
         text: String,
         tokens: List<String>,
@@ -1100,7 +1154,6 @@ class EnglishPhonemizer(
         verboseLog(TAG) {
             "tokenize tokens text: ${mutableTokens.joinToString { token -> token.text }}"
         }
-        verboseLog(TAG) { "tokenize tokens text: ${mutableTokens.joinToString { token -> token.text }}" }
         if (features.isEmpty()) {
             return mutableTokens
         }
@@ -1126,11 +1179,14 @@ class EnglishPhonemizer(
         data class MTokenListValue(val value: MutableList<MToken>) : RetokenizeValue()
     }
 
-    suspend fun retokenize(tokens: List<MToken>): List<RetokenizeValue> {
+    fun retokenize(
+        tokens: List<MToken>,
+        cancellationCheck: CancellationCheck,
+    ): List<RetokenizeValue> {
         val words = mutableListOf<RetokenizeValue>()
         var currency: MToken? = null
         for ((index, token) in tokens.withIndex()) {
-            currentCoroutineContext().ensureActive()
+            cancellationCheck()
             val currentIterTks = if (token.more?.get("alias") == null && token.phonemes == null) {
                 findSubtokens(token.text).map { t ->
                     token.copy(
@@ -1141,7 +1197,7 @@ class EnglishPhonemizer(
                             "numFlags" to token.more?.get("numFlags"),
                             "stress" to token.more?.get("stress"),
                             "prespace" to false,
-                        )
+                        ),
                     )
                 }.toMutableList()
             } else {
@@ -1150,9 +1206,11 @@ class EnglishPhonemizer(
             if (currentIterTks.isNotEmpty()) {
                 currentIterTks.last().whitespace = token.whitespace
             }
-            for ((currentIterTkIndex, currentIterTk) in currentIterTks.withIndex()) {
-                currentCoroutineContext().ensureActive()
-                verboseLog(TAG) { "retokenize currentIterTk word and tag: ${currentIterTk.text}, ${currentIterTk.tag}" }
+            currentIterTks.forEachIndexed { currentIterTkIndex, currentIterTk ->
+                cancellationCheck()
+                verboseLog(TAG) {
+                    "retokenize currentIterTk word and tag: ${currentIterTk.text}, ${currentIterTk.tag}"
+                }
                 if (currentIterTk.more?.get("alias") != null || currentIterTk.phonemes != null) {
                     // pass
                 } else if (currentIterTk.tag.isOneOf("SYM", "NUM") &&
@@ -1169,7 +1227,9 @@ class EnglishPhonemizer(
                     !currentIterTk.text.all { c -> c.lowercaseChar().code in 97..122 }
                 ) {
                     currentIterTk.phonemes =
-                        currentIterTk.text.map { c -> PUNCTS_REPLACEMENTS[c] ?: c }.joinToString("")
+                        currentIterTk.text.map { c ->
+                            PUNCTS_REPLACEMENTS[c.code] ?: c
+                        }.joinToString("")
                     currentIterTk.more?.set("rating", 4)
                 } else if (currency != null) {
                     if (currentIterTk.tag != "NUM" /* "CD" */) {
@@ -1228,42 +1288,44 @@ class EnglishPhonemizer(
     fun tokenContext(ctx: TokenContext, phonemes: String?, token: MToken): TokenContext {
         var vowel = ctx.futureVowel
         if (!phonemes.isNullOrEmpty()) {
-            vowel = phonemes
-                .filter { c -> (c in VOWELS || c in CONSONANTS || c.toString() in NON_QUOTE_PUNCTS) }
-                .mapNotNull { c ->
-                    if (c.toString() in NON_QUOTE_PUNCTS) {
-                        null
-                    } else {
-                        c in VOWELS
-                    }
+            for (ch in phonemes) {
+                if (ch !in VOWELS_OR_CONSONANTS_OR_NON_QUOTE_PUNCTS) {
+                    continue
                 }
-                .firstOrNull() ?: vowel
+                if (ch in NON_QUOTE_PUNCTS) {
+                    break
+                }
+                vowel = ch in VOWELS
+                break
+            }
         }
-        val futureTo = token.text in setOf("to", "To") || (token.text == "TO" && token.tag in setOf(
-            "TO",
-            "IN"
-        ))
+        val futureTo = token.text.isOneOf("to", "To") ||
+            (
+                token.text == "TO" && token.tag.isOneOf("TO", "IN")
+                )
         return TokenContext(futureVowel = vowel, futureTo = futureTo)
     }
 
     fun resolveTokens(tokens: List<MToken>) {
         val text = tokens.dropLast(1)
             .joinToString("") { tk -> tk.text + tk.whitespace } + tokens.last().text
-        val prespace = ' ' in text || '/' in text || text.filter { c -> c !in SUBTOKEN_JUNKS }
-            .map { c ->
-                if (c.isLetter()) {
-                    0
-                } else {
-                    if (isDigit(c.toString())) {
-                        1
+        val prespace = ' ' in text ||
+            '/' in text ||
+            text.filter { c -> c !in SUBTOKEN_JUNKS }
+                .map { c ->
+                    if (c.isLetter()) {
+                        0
                     } else {
-                        2
+                        if (c.isAsciiDigit()) {
+                            1
+                        } else {
+                            2
+                        }
                     }
-                }
-            }.size > 1
-        for ((index, tk) in tokens.withIndex()) {
+                }.size > 1
+        tokens.forEachIndexed { index, tk ->
             if (tk.phonemes == null) {
-                if (index == tokens.lastIndex && tk.text in NON_QUOTE_PUNCTS) {
+                if (index == tokens.lastIndex && tk.text[0] in NON_QUOTE_PUNCTS) {
                     tk.phonemes = tk.text
                     tk.more?.set("rating", 3)
                 } else if (tk.text.all { c -> c in SUBTOKEN_JUNKS }) {
@@ -1282,7 +1344,7 @@ class EnglishPhonemizer(
                 Triple(
                     tk.phonemes?.contains(PRIMARY_STRESS) == true,
                     stressWeight(tk.phonemes),
-                    index
+                    index,
                 )
             }
         if (indices.size == 2 && tokens[indices[0].third].text.length == 1) {
@@ -1310,7 +1372,7 @@ class EnglishPhonemizer(
         }
     }
 
-    suspend fun tokenFallback(tk: MToken): Pair<String?, Int?> {
+    fun tokenFallback(tk: MToken, cancellationCheck: CancellationCheck): Pair<String?, Int?> {
         verboseLog(TAG) { "tokenFallback tk: $tk" }
         return if (tk.text in PUNCT_SYMBOLS) {
             lexicon.lookup(PUNCT_SYMBOLS[tk.text], null, -0.5, null)
@@ -1322,45 +1384,57 @@ class EnglishPhonemizer(
                 tk.more?.get("numFlags") as String?,
             )
         } else {
-            (if (this.fallback != null && tk.text.length != 1 && !(tk.tag == "PROPN" && tk.text.let { it.isNotEmpty() && it.all { c -> c.isUpperCase() } })) {
-                this.fallback.main(tk)
-            } else {
-                if (tk.text.all { c -> c.isLetter() }) {
-                    lexicon.getPropn(tk.text)
-                } else {
-                    val result = tk.text.fold(
-                        Pair(
-                            mutableListOf<String>(),
-                            mutableListOf<MToken>()
+            (
+                if (this.fallback != null &&
+                    tk.text.length != 1 &&
+                    !(
+                        tk.tag == "PROPN" &&
+                            tk.text.let { it.isNotEmpty() && it.all { c -> c.isUpperCase() } }
                         )
-                    ) { acc, ch ->
-                        UCharacter.getName(ch.code)
-                            // Unicode names are all uppercase, so convert to
-                            // lowercase so the words are found in the dictionary
-                            ?.lowercase(Locale.ENGLISH)
-                            ?.let { this.main(it) }
-                            .let { subResult ->
-                                val subResult = subResult ?: Pair(unk, null)
-                                acc.first.add(subResult.first)
-                                subResult.second?.let { acc.second.addAll(it) }
-                            }
-                        acc
-                    }
-                    Pair(
-                        result.first.joinToString(", "),
-                        if (result.second.isNotEmpty()) {
-                            mergeTokens(result.second)
-                                .more?.get("rating") as Int?
-                        } else {
-                            null
+                ) {
+                    this.fallback.main(tk)
+                } else {
+                    if (tk.text.all { c -> c.isLetter() }) {
+                        lexicon.getPropn(tk.text)
+                    } else {
+                        val result = tk.text.fold(
+                            Pair(
+                                mutableListOf<String>(),
+                                mutableListOf<MToken>(),
+                            ),
+                        ) { acc, ch ->
+                            UCharacter.getName(ch.code)
+                                // Unicode names are all uppercase, so convert to
+                                // lowercase so the words are found in the dictionary
+                                ?.lowercase(Locale.ENGLISH)
+                                ?.let { this.main(it, cancellationCheck) }
+                                .let { subResult ->
+                                    val subResult = subResult ?: Pair(unk, null)
+                                    acc.first.add(subResult.first)
+                                    subResult.second?.let { acc.second.addAll(it) }
+                                }
+                            acc
                         }
-                    )
+                        Pair(
+                            result.first.joinToString(", "),
+                            if (result.second.isNotEmpty()) {
+                                mergeTokens(result.second)
+                                    .more?.get("rating") as Int?
+                            } else {
+                                null
+                            },
+                        )
+                    }
                 }
-            })
+                )
         }
     }
 
-    suspend fun main(text: String, preprocess: Boolean = true): Pair<String, List<MToken>> {
+    fun main(
+        text: String,
+        cancellationCheck: CancellationCheck,
+        preprocess: Boolean = true,
+    ): Pair<String, List<MToken>> {
         val (text, tokens, features) = if (preprocess) {
             this.preprocess(text)
         } else {
@@ -1370,19 +1444,24 @@ class EnglishPhonemizer(
         val foldLefted = this.foldLeft(tokenized)
         // Currently used POS tagger does not classify the "a" in ["a"] and ["capital", "a"] as DET,
         // which means it gets pronounced instead of spelled out. Manually override those two cases.
-        if ((foldLefted.size == 1 && foldLefted[0].text == "a") || (foldLefted.size == 2 && foldLefted.joinToString(
-                " "
-            ) { it.text } == "capital A")
+        if ((foldLefted.size == 1 && foldLefted[0].text == "a") ||
+            (
+                foldLefted.size == 2 &&
+                    foldLefted.joinToString(
+                        " ",
+                    ) { it.text } == "capital A"
+                )
         ) {
             foldLefted.last().phonemes = "ˈA"
         }
-        val retokenized = this.retokenize(foldLefted)
+        val retokenized = this.retokenize(foldLefted, cancellationCheck)
         var ctx = TokenContext()
         for (word in retokenized.reversed()) {
-            currentCoroutineContext().ensureActive()
+            cancellationCheck()
             when (word) {
                 is RetokenizeValue.MTokenListValue -> {
-                    var (left, right) = Pair(0, word.value.size)
+                    var left = 0
+                    var right = word.value.size
                     var shouldFallback = false
                     while (left < right) {
                         val leftRightSublist = word.value.subList(left, right)
@@ -1429,9 +1508,9 @@ class EnglishPhonemizer(
                         }
                     }
                     if (shouldFallback) {
-                        verboseLog(TAG) { "fallback tokens: ${word.value}"}
+                        verboseLog(TAG) { "fallback tokens: ${word.value}" }
                         for (tk in word.value) {
-                            (this.tokenFallback(tk)).let { (phonemes, rating) ->
+                            (this.tokenFallback(tk, cancellationCheck)).let { (phonemes, rating) ->
                                 tk.phonemes = phonemes
                                 tk.more?.set("rating", rating)
                             }
@@ -1451,7 +1530,10 @@ class EnglishPhonemizer(
                             }
                     }
                     if (word.value.phonemes == null) {
-                        this.tokenFallback(word.value).let { (phonemes, rating) ->
+                        this.tokenFallback(
+                            word.value,
+                            cancellationCheck,
+                        ).let { (phonemes, rating) ->
                             word.value.phonemes = phonemes
                             word.value.more?.set("rating", rating)
                         }
@@ -1466,19 +1548,27 @@ class EnglishPhonemizer(
                 is RetokenizeValue.MTokenValue -> tk.value
             }
         }
+        val result = StringBuilder(mergedMTokens.size * 8)
         for (tk in mergedMTokens) {
-            if (!tk.phonemes.isNullOrEmpty()) {
-                tk.phonemes = tk.phonemes?.replace('ɾ', 'T')?.replace('ʔ', 't')
+            val phonemes = tk.phonemes
+            if (phonemes == null) {
+                result.append(this.unk)
+            } else {
+                if (!phonemes.contains('ɾ') && !phonemes.contains('ʔ')) {
+                    result.append(phonemes)
+                } else {
+                    phonemes.forEach { ch ->
+                        when (ch) {
+                            'ɾ' -> result.append('T')
+                            'ʔ' -> result.append('t')
+                            else -> result.append(ch)
+                        }
+                    }
+                }
+                result.append(tk.whitespace)
             }
         }
-        val result = mergedMTokens.joinToString("") { tk ->
-            if (tk.phonemes == null) {
-                this.unk
-            } else {
-                tk.phonemes
-            } + tk.whitespace
-        }
-        return Pair(result, mergedMTokens)
+        return Pair(result.toString(), mergedMTokens)
     }
 
     override fun close() {
