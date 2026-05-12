@@ -13,170 +13,34 @@ import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.SonicAudioProcessor
-import androidx.media3.common.util.UnstableApi
-import app.grapheneos.speechservices.R
-import app.grapheneos.speechservices.g2p.DictionaryValue
-import app.grapheneos.speechservices.g2p.EnglishPhonemizer
-import app.grapheneos.speechservices.g2p.Lexicon
-import app.grapheneos.speechservices.g2p.fallback_network.FallbackNetwork
-import app.grapheneos.speechservices.g2p.fallback_network.G2PTokenizer
-import app.grapheneos.speechservices.g2p.fallback_network.G2PTokenizerConfig
+import app.grapheneos.speechservices.allocateDirectFloatBuffer
 import app.grapheneos.speechservices.verboseLog
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.decodeFromStream
-import opennlp.tools.postag.POSModel
-import opennlp.tools.postag.POSTaggerME
-import opennlp.tools.tokenize.TokenizerME
-import opennlp.tools.tokenize.TokenizerModel
-import org.json.JSONObject
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.FloatBuffer
 import java.nio.LongBuffer
-import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.math.ceil
 import kotlin.math.min
 
 private const val TAG = "TextToSpeechServiceImpl"
 
-private enum class DefaultVoice(val voice: Voice) {
-    EnUs(
-        Voice(
-            "en_US",
-            Locale.US,
-            Voice.QUALITY_VERY_HIGH,
-            Voice.LATENCY_NORMAL,
-            false,
-            emptySet<String>()
-        )
-    )
+private val voiceInitExecutor = Executors.newCachedThreadPool {
+    Thread(it).apply {
+        priority = Thread.MAX_PRIORITY
+    }
 }
 
-val supportedVoices = DefaultVoice.entries.map { it.voice } + listOf()
+typealias CancellationCheck = () -> Unit
 
-val availableVoices = supportedVoices
+class CancelledRequestException : Exception()
 
-fun getAvailableVoiceByName(voiceName: String): Voice? {
-    return availableVoices.find { availableVoice -> availableVoice.name == voiceName }
-}
-
-fun isVoiceAvailable(voice: Voice?): Boolean {
-    return availableVoices.find { availableVoice -> availableVoice == voice } != null
-}
-
-fun isVoiceAvailable(voiceName: String): Boolean {
-    return getAvailableVoiceByName(voiceName) != null
-}
-
-fun isLanguageAvailableWithDefaultVoiceName(
-    lang: String?,
-    country: String?,
-    variant: String?
-): Pair<Int, String?> {
-    verboseLog(TAG) { "isLanguageAvailableWithDefaultVoiceName parameters: lang: $lang, country: $country, variant: $variant" }
-
-    val modernizedLocale = deprecatedLocaleToModern(lang, country, variant)
-    val lang = modernizedLocale.language
-    val country = modernizedLocale.country
-    val variant = modernizedLocale.variant
-
-    verboseLog(TAG) { "isLanguageAvailableWithDefaultVoiceName converted parameters: lang: $lang, country: $country, variant: $variant" }
-
-    val defaultVoiceEntries = DefaultVoice.entries.map { Pair<Int?, Voice?>(null, it.voice) }
-    val best =
-        defaultVoiceEntries.fold(
-            Pair<Int?, Voice?>(
-                TextToSpeech.LANG_NOT_SUPPORTED,
-                null
-            )
-        ) { best, candidate ->
-            val bestVoice = best.second
-            val candidateVoice = candidate.second
-            val bestLocale = bestVoice?.locale
-            val candidateLocale = candidateVoice?.locale
-
-            val isBestVoiceAvailable =
-                bestVoice != null && bestLocale != null && isVoiceAvailable(bestVoice)
-            val isCandidateVoiceAvailable =
-                candidateVoice != null && candidateLocale != null && isVoiceAvailable(candidateVoice)
-
-            if (isBestVoiceAvailable && bestLocale.language == lang && bestLocale.country == country && bestLocale.variant == variant) {
-                Pair(TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE, bestVoice)
-            } else if (isCandidateVoiceAvailable && candidateLocale.language == lang && candidateLocale.country == country && candidateLocale.variant == variant) {
-                Pair(TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE, candidateVoice)
-            } else if (isBestVoiceAvailable && bestLocale.language == lang && bestLocale.country == country) {
-                Pair(TextToSpeech.LANG_COUNTRY_AVAILABLE, best.second)
-            } else if (isCandidateVoiceAvailable && candidateLocale.language == lang && candidateLocale.country == country) {
-                Pair(TextToSpeech.LANG_COUNTRY_AVAILABLE, candidate.second)
-            } else if (bestLocale != null && bestLocale.language == lang) {
-                if (isBestVoiceAvailable) {
-                    Pair(TextToSpeech.LANG_AVAILABLE, best.second)
-                } else {
-                    Pair(TextToSpeech.LANG_MISSING_DATA, null)
-                }
-            } else if (candidateLocale != null && candidateLocale.language == lang) {
-                if (isCandidateVoiceAvailable) {
-                    Pair(TextToSpeech.LANG_AVAILABLE, candidate.second)
-                } else {
-                    Pair(TextToSpeech.LANG_MISSING_DATA, null)
-                }
-            } else {
-                Pair(TextToSpeech.LANG_NOT_SUPPORTED, null)
-            }
-        }
-
-    return Pair(best.first ?: TextToSpeech.LANG_NOT_SUPPORTED, best.second?.name)
-}
-
+@androidx.media3.common.util.UnstableApi
 class TextToSpeechServiceImpl : TextToSpeechService() {
-
-    /** The [Voice] that is in the process of being loaded. This is set to null when no voice is
-     * loaded, or when loading is finished or cancelled. */
-    private var loadingVoice: Voice? = null
-
-    /** The [Voice] that is currently fully loaded. This is set to null when no voice is loaded or a new
-     * [Voice] is in the process of being loaded. */
-    private var loadedVoice: Voice? = null
-
-    private val loadVoiceMutex = Mutex()
-
-    private var loadVoiceJob: Job? = null
-
-    private val loadVoiceInBackgroundMutex = Mutex()
-
-    private var loadVoiceInBackgroundJob: Job? = null
-
-    private var synthesizeTextJob: Job? = null
-
-    private var encoder: Encoder? = null
-
-    private var decoder: Decoder? = null
+    private val voiceResourcesInitLock = ReentrantLock()
+    private var voiceResources: VoiceResources? = null
 
     private val symbolTokenizer = SymbolTokenizer()
-
-    private var englishPhonemizer: EnglishPhonemizer? = null
-
-    private fun loadG2PTokenizerConfig(): G2PTokenizerConfig {
-        resources.openRawResource(R.raw.en_us__g2p__config).bufferedReader().use { bufferedReader ->
-            val config = JSONObject(bufferedReader.readText())
-            return G2PTokenizerConfig(
-                config.getString("grapheme_chars"),
-                config.getString("phoneme_chars")
-            )
-        }
-    }
 
     private val sonicAudioProcessor = SonicAudioProcessor()
 
@@ -192,171 +56,42 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
         }
     }
 
-    private suspend fun loadVoice(voiceName: String) {
-        Log.d(TAG, "loadVoice parameters: voiceName: $voiceName")
-
-        lateinit var currentJob: Job
-
-        loadVoiceMutex.withLock {
-            val voice = getAvailableVoiceByName(voiceName)
-            if (voice == null || loadedVoice == voice) {
-                return
-            } else if (loadingVoice == voice) {
-                loadVoiceJob?.join()
-                return
-            }
-
-            val prevJob = loadVoiceJob
-            if (prevJob != null && !prevJob.isCompleted) {
-                verboseLog(TAG) { "cancelling previous loadVoiceJob" }
-                prevJob.cancelAndJoin()
-                verboseLog(TAG) { "cancelled previous loadVoiceJob" }
-                loadVoiceJob = null
-            }
-
-            currentJob = CoroutineScope(Dispatchers.IO).launch(start = CoroutineStart.LAZY) {
-                val prevLoadedVoice = loadedVoice
-                loadedVoice = null
-                loadingVoice = voice
-                var newEncoder: Encoder? = null
-                var newDecoder: Decoder? = null
-                var newEnglishPhonemizer: EnglishPhonemizer? = null
-                try {
-                    ensureActive()
-                    val totalLoadingTime = SystemClock.elapsedRealtime()
-                    val encoderTime = SystemClock.elapsedRealtime()
-                    newEncoder = resources.openRawResourceFd(R.raw.encoder).use {
-                        Encoder(it)
-                    }
-                    verboseLog(TAG) {
-                        "encoder loading time: ${SystemClock.elapsedRealtime() - encoderTime}"
-                    }
-                    ensureActive()
-                    val decoderTime = SystemClock.elapsedRealtime()
-                    newDecoder = resources.openRawResourceFd(R.raw.decoder).use {
-                        Decoder(it)
-                    }
-                    verboseLog(TAG) {
-                        "decoder loading time: ${SystemClock.elapsedRealtime() - decoderTime}"
-                    }
-                    ensureActive()
-                    val lexiconTime = SystemClock.elapsedRealtime()
-                    val lexicon = Lexicon(
-                        false,
-                        resources.openRawResource(R.raw.us_gold).use { inputStream ->
-                            @OptIn(ExperimentalSerializationApi::class)
-                            val decoded =
-                                Json.decodeFromStream<Map<String, DictionaryValue>>(inputStream)
-                            return@use decoded
-                        }
-                    )
-                    verboseLog(TAG) {
-                        "lexicon loading time: ${SystemClock.elapsedRealtime() - lexiconTime}"
-                    }
-                    val fallbackNetworkTime = SystemClock.elapsedRealtime()
-                    val config = loadG2PTokenizerConfig()
-                    val g2PTokenizer = G2PTokenizer(config)
-                    verboseLog(TAG) {
-                        "fallbackNetwork tokenizer loading time: ${SystemClock.elapsedRealtime() - fallbackNetworkTime}"
-                    }
-                    val fallbackNetwork =
-                        resources.openRawResourceFd(R.raw.en_us__g2p)
-                            .use {
-                                FallbackNetwork(it, g2PTokenizer)
-                            }
-                    verboseLog(TAG) {
-                        "fallbackNetwork total loading time: ${SystemClock.elapsedRealtime() - fallbackNetworkTime}"
-                    }
-                    val englishPhonemizerTime = SystemClock.elapsedRealtime()
-                    newEnglishPhonemizer = EnglishPhonemizer(
-                        lexicon,
-                        "ˌʌnnˈOn", // "unknown"
-                        resources.openRawResource(R.raw.opennlp_en_ud_ewt_tokens__1_3__2_5_4).use {
-                            TokenizerME(TokenizerModel(it))
-                        },
-                        resources.openRawResource(R.raw.opennlp_en_ud_ewt_pos__1_3__2_5_4).use {
-                            POSTaggerME(POSModel(it))
-                        },
-                        fallbackNetwork
-                    )
-                    verboseLog(TAG) {
-                        "englishPhonemizer loading time: ${SystemClock.elapsedRealtime() - englishPhonemizerTime}"
-                    }
-                    Log.d(
-                        TAG,
-                        "total voice loading time: ${SystemClock.elapsedRealtime() - totalLoadingTime}"
-                    )
-                } catch (e: CancellationException) {
-                    loadingVoice = null
-                    loadedVoice = prevLoadedVoice
-                    newEncoder?.close()
-                    newDecoder?.close()
-                    newEnglishPhonemizer?.close()
-                    throw e
-                }
-                loadedVoice = loadingVoice
-                loadingVoice = null
-                // TODO: If we support more languages, we should probably cache previously used
-                //  models to avoid constant loading and unloading of them when frequently
-                //  switching between languages so that delay is minimized.
-                encoder?.close()
-                decoder?.close()
-                englishPhonemizer?.close()
-                encoder = newEncoder
-                decoder = newDecoder
-                englishPhonemizer = newEnglishPhonemizer
-            }
-            loadVoiceJob = currentJob
-            currentJob.start()
-        }
-
-        currentJob.join()
-    }
-
-    private suspend fun loadVoiceInBackground(voiceName: String) {
-        Log.d(TAG, "loadVoiceInBackground parameters: voiceName: $voiceName")
-
-        loadVoiceInBackgroundMutex.withLock {
-            if (loadedVoice?.name == voiceName || loadingVoice?.name == voiceName) {
-                return
-            }
-
-            val prevJob = loadVoiceInBackgroundJob
-            if (prevJob != null && !prevJob.isCompleted) {
-                verboseLog(TAG) { "cancelling previous loadVoiceInBackgroundJob" }
-                prevJob.cancelAndJoin()
-                verboseLog(TAG) { "cancelled previous loadVoiceInBackgroundJob" }
-                loadVoiceInBackgroundJob = null
-            }
-
-            loadVoiceInBackgroundJob = CoroutineScope(Dispatchers.IO).launch {
-                // If synthesizing, wait until it's finished to avoid cancelling synthesis.
-                synthesizeTextJob?.join()
-                loadVoice(voiceName)
-            }
-        }
-    }
-
     override fun onLoadVoice(voiceName: String): Int {
         Log.d(TAG, "onLoadVoice parameters: voiceName: $voiceName")
-
-        runBlocking {
-            loadVoiceInBackground(voiceName)
-        }
-
+        prepareVoiceResourcesAsync(voiceName)
         return TextToSpeech.SUCCESS
+    }
+
+    private fun prepareVoiceResourcesAsync(voiceName: String): VoiceResources? {
+        val voice = getAvailableVoiceByName(voiceName) ?: return null
+        return prepareVoiceResourcesAsync(voice)
+    }
+
+    private fun prepareVoiceResourcesAsync(voice: Voice): VoiceResources {
+        return voiceResourcesInitLock.withLock {
+            voiceResources?.let {
+                if (it.voice == voice) {
+                    return it
+                }
+                it.close()
+                voiceResources = null
+            }
+            return@withLock loadVoiceResources(voiceInitExecutor, resources, voice).also {
+                voiceResources = it
+            }
+        }
     }
 
     override fun onGetDefaultVoiceNameFor(
         lang: String,
         country: String?,
-        variant: String?
+        variant: String?,
     ): String? {
         verboseLog(TAG) {
             "onGetDefaultVoiceNameFor parameters: lang: $lang, country: $country, variant: $variant"
         }
 
-        return isLanguageAvailableWithDefaultVoiceName(lang, country, variant).second
+        return checkLanguageAvailability(lang, country, variant).voice?.name
     }
 
     override fun onIsLanguageAvailable(lang: String, country: String?, variant: String?): Int {
@@ -364,16 +99,16 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
             "onIsLanguageAvailable parameters: lang: $lang, country: $country, variant: $variant"
         }
 
-        return isLanguageAvailableWithDefaultVoiceName(lang, country, variant).first
+        return checkLanguageAvailability(lang, country, variant).status
     }
 
     override fun onLoadLanguage(lang: String, country: String?, variant: String?): Int {
         Log.d(TAG, "onLoadLanguage parameters: lang: $lang, country: $country, variant: $variant")
 
-        val (languageAvailability, defaultVoiceName) = isLanguageAvailableWithDefaultVoiceName(
+        val (languageAvailability, defaultVoice) = checkLanguageAvailability(
             lang,
             country,
-            variant
+            variant,
         )
 
         when (languageAvailability) {
@@ -381,353 +116,336 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
                 return languageAvailability
             }
         }
-        if (defaultVoiceName == null) {
+        if (defaultVoice == null) {
             return languageAvailability
         }
 
-        runBlocking {
-            loadVoiceInBackground(defaultVoiceName)
-        }
+        prepareVoiceResourcesAsync(defaultVoice)
 
         return languageAvailability
     }
 
     override fun onGetLanguage(): Array<String> {
         Log.w(
-            TAG, "onGetLanguage called, returning emptyArray(). Method is not supposed " +
-                    "to be called on modern Android versions (API > 17)."
+            TAG,
+            "onGetLanguage called, returning emptyArray(). Method is not supposed " +
+                "to be called on modern Android versions (API > 17).",
         )
         return emptyArray()
     }
 
-    @androidx.annotation.OptIn(UnstableApi::class)
+    @Volatile
+    private var currentSynthesisRequest: SynthesisRequest? = null
+
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         verboseLog(TAG) {
             "onSynthesizeText parameters: charSequenceText: ${request.charSequenceText}, " +
-                    "voiceName: ${request.voiceName}, language: ${request.language}, " +
-                    "country: ${request.country}, variant: ${request.variant}, " +
-                    "speechRate: ${request.speechRate}, pitch: ${request.pitch}, " +
-                    "params.keySet(): ${request.params.keySet()}, " +
-                    "callerUid: ${request.callerUid}, " +
-                    "callback.maxBufferSize: ${callback.maxBufferSize}"
+                "voiceName: ${request.voiceName}, language: ${request.language}, " +
+                "country: ${request.country}, variant: ${request.variant}, " +
+                "speechRate: ${request.speechRate}, pitch: ${request.pitch}, " +
+                "params.keySet(): ${request.params.keySet()}, " +
+                "callerUid: ${request.callerUid}, " +
+                "callback.maxBufferSize: ${callback.maxBufferSize}"
         }
 
-        lateinit var currentJob: Job
+        this.currentSynthesisRequest = request
 
-        synchronized(this) {
-            val prevJob = synthesizeTextJob
-            if (prevJob?.isCompleted == false) {
-                verboseLog(TAG) { "cancelling previous synthesizeTextJob" }
-                runBlocking {
-                    prevJob.cancelAndJoin()
-                }
-                verboseLog(TAG) { "cancelled previous synthesizeTextJob" }
-                synthesizeTextJob = null
+        val cancellationCheck = {
+            if (this.currentSynthesisRequest !== request) {
+                throw CancelledRequestException()
             }
+        }
 
-            currentJob = CoroutineScope(Dispatchers.IO).launch(start = CoroutineStart.LAZY) {
-                try {
-                    var timeToFirstAudio: Long? = null
-                    val startTime = SystemClock.elapsedRealtime()
+        try {
+            synthesizeText(request, callback, cancellationCheck)
+        } catch (_: CancelledRequestException) {
+            verboseLog(TAG) { "onSynthesizeText: request cancelled" }
+        }
 
-                    val requestVoice = getAvailableVoiceByName(request.voiceName)
-                        ?: isLanguageAvailableWithDefaultVoiceName(
-                            request.language,
-                            request.country,
-                            request.variant
-                        ).second?.let { voiceName -> getAvailableVoiceByName(voiceName) }
-                    if (requestVoice != null) {
-                        loadVoice(requestVoice.name)
-                        val encoder = encoder
-                        val decoder = decoder
-                        val englishPhonemizer = englishPhonemizer
-                        if (encoder == null || decoder == null || englishPhonemizer == null) {
-                            Log.e(
-                                TAG,
-                                "onSynthesizeText: Voice not loaded after calling loadVoice with an available Voice!"
-                            )
-                            callback.error(TextToSpeech.ERROR_SERVICE)
-                            return@launch
-                        }
-
-                        callback.start(
-                            22050,
-                            AudioFormat.ENCODING_PCM_16BIT,
-                            1
-                        )
-
-                        val env = OrtEnvironment.getEnvironment()
-
-                        // TODO: support rangeStart()
-
-                        val lengthScale = OnnxTensor.createTensor(
-                            env,
-                            FloatBuffer.wrap(floatArrayOf(1.0F)),
-                            longArrayOf(1)
-                        )
-
-                        val currentQueue = StringBuilder()
-                        // Score based on some characters likely being longer in phonemes, meant to
-                        // ensure fast time-to-first-audio.
-                        var currentQueueScore = 0
-                        val bestQueueBreakOnlyThreshold = 250
-                        val midAndUpQueueBreakOnlyThreshold = 350
-                        val mehAndUpQueueBreakOnlyThreshold = 450
-                        val worstAndUpQueueBreakOnlyThreshold = 500
-
-                        for ((index, char) in request.charSequenceText.withIndex()) {
-                            val isLastIndex = index == request.charSequenceText.lastIndex
-                            currentQueue.append(char)
-                            currentQueueScore += if (char.isDigit()) {
-                                4
-                            } else if (char == '-') {
-                                11
-                            } else {
-                                1
-                            }
-                            val breakQueue = run {
-                                if (isLastIndex || currentQueue.endsWith(". ") || currentQueue.endsWith(
-                                        "? "
-                                    ) || currentQueue.endsWith("! ") || currentQueue.endsWith(
-                                        '\n'
-                                    )
-                                ) {
-                                    return@run true
-                                }
-                                if (currentQueueScore >= bestQueueBreakOnlyThreshold) {
-                                    if (currentQueue.endsWith(": ") || currentQueue.endsWith(" ;") || currentQueue.endsWith(
-                                            '—'
-                                        ) || currentQueue.endsWith(" ...") || currentQueue.endsWith(
-                                            "... "
-                                        ) || currentQueue.endsWith(" …") || currentQueue.endsWith(
-                                            "… "
-                                        ) || currentQueue.endsWith(
-                                            """ """"
-                                        ) || currentQueue.endsWith("""" """) || currentQueue.endsWith(
-                                            " “"
-                                        ) || currentQueue.endsWith("” ") || currentQueue.endsWith(
-                                            " ("
-                                        ) || currentQueue.endsWith(
-                                            ") "
-                                        )
-                                    ) {
-                                        return@run true
-                                    }
-                                }
-                                if (currentQueueScore >= midAndUpQueueBreakOnlyThreshold) {
-                                    if (currentQueue.endsWith(", ")) {
-                                        return@run true
-                                    }
-                                }
-                                if (currentQueueScore >= mehAndUpQueueBreakOnlyThreshold) {
-                                    if (char.isWhitespace()) {
-                                        return@run true
-                                    }
-                                }
-                                if (currentQueueScore >= worstAndUpQueueBreakOnlyThreshold) {
-                                    return@run true
-                                }
-
-                                false
-                            }
-                            if (breakQueue) {
-                                val phonemeText =
-                                    englishPhonemizer.main(currentQueue.toString())
-                                currentQueue.clear()
-                                currentQueueScore = 0
-                                verboseLog(TAG) { "Queued phonemes: ${phonemeText.first}" }
-                                val queuePhoneIds =
-                                    symbolTokenizer.encodeToIds(phonemeText.first)
-
-                                val x = OnnxTensor.createTensor(env, arrayOf(queuePhoneIds))
-                                val xLengths = OnnxTensor.createTensor(
-                                    env,
-                                    longArrayOf(queuePhoneIds.size.toLong())
-                                )
-
-                                // Should be set to the input length that's supported by the decoder.
-                                val yMaxLengthInBatch = 64
-
-                                val (yLengths, muY, yMask) = encoder.run(
-                                    x,
-                                    xLengths,
-                                    lengthScale
-                                )
-                                    .use { result ->
-                                        @Suppress("UNCHECKED_CAST")
-                                        Triple(
-                                            result[0].value as LongArray,
-                                            result[1].value as Array<Array<FloatArray>>,
-                                            result[2].value as Array<Array<FloatArray>>,
-                                        )
-                                    }
-                                val firstYLength = yLengths[0]
-                                val yLengthBatchesSize =
-                                    ceil(firstYLength.toFloat() / yMaxLengthInBatch.toFloat()).toInt()
-                                for (splitIndex in 0..<yLengthBatchesSize) {
-                                    fun pcmFloatToPcm16Le(pcmFloat: FloatArray): ByteArray {
-                                        val pcm16 = ByteArray(pcmFloat.size * 2)
-                                        var pcm16Index = 0
-                                        for (pcmFloatIndex in pcmFloat.indices) {
-                                            val s = (pcmFloat[pcmFloatIndex].coerceIn(
-                                                -1f,
-                                                1f
-                                            ) * 32767.0f).toInt()
-                                            pcm16[pcm16Index] = (s and 0xFF).toByte()
-                                            pcm16[pcm16Index + 1] = ((s ushr 8) and 0xFF).toByte()
-                                            pcm16Index += 2
-                                        }
-                                        return pcm16
-                                    }
-
-                                    val startOfRange = splitIndex * yMaxLengthInBatch
-                                    val endOfRange = (splitIndex + 1) * yMaxLengthInBatch
-                                    verboseLog(TAG) {
-                                        "onSynthesizeText decoding: startOfRange: $startOfRange, endOfRange: $endOfRange"
-                                    }
-                                    val cutMuY = mutableListOf<FloatArray>()
-                                    for (secondDimObject in muY[0]) {
-                                        val toAdd = mutableListOf<Float>()
-                                        for (i in startOfRange..<endOfRange) {
-                                            toAdd.add(secondDimObject.getOrElse(i) { 0F })
-                                        }
-                                        cutMuY.add(toAdd.toFloatArray())
-                                    }
-                                    val cutYMask = mutableListOf<FloatArray>()
-                                    for (secondDimObject in yMask[0]) {
-                                        val toAdd = mutableListOf<Float>()
-                                        for (i in startOfRange..<endOfRange) {
-                                            toAdd.add(secondDimObject.getOrElse(i) { 1F })
-                                        }
-                                        cutYMask.add(toAdd.toFloatArray())
-                                    }
-                                    val (pcmFloats) = decoder.run(
-                                        OnnxTensor.createTensor(
-                                            env,
-                                            arrayOf(cutMuY.toTypedArray())
-                                        ),
-                                        OnnxTensor.createTensor(
-                                            env,
-                                            arrayOf(cutYMask.toTypedArray())
-                                        ),
-                                        OnnxTensor.createTensor(
-                                            env,
-                                            LongBuffer.wrap(longArrayOf(5)),
-                                            longArrayOf(1)
-                                        ),
-                                    ).use { result ->
-                                        @Suppress("UNCHECKED_CAST")
-                                        result[0].value as Array<FloatArray>
-                                    }
-                                    val unpaddedSize =
-                                        (min(
-                                            endOfRange,
-                                            firstYLength.toInt()
-                                        ) - startOfRange) * 256
-                                    var segment =
-                                        pcmFloatToPcm16Le(
-                                            pcmFloats.take(unpaddedSize).toFloatArray()
-                                        )
-                                    sonicAudioProcessor.setOutputSampleRateHz(
-                                        SonicAudioProcessor.SAMPLE_RATE_NO_CHANGE
-                                    )
-                                    sonicAudioProcessor.configure(
-                                        AudioProcessor.AudioFormat(
-                                            22050,
-                                            1,
-                                            C.ENCODING_PCM_16BIT,
-                                        )
-                                    )
-                                    sonicAudioProcessor.setSpeed(request.speechRate / 100F)
-                                    sonicAudioProcessor.setPitch(request.pitch / 100F)
-                                    sonicAudioProcessor.flush(AudioProcessor.StreamMetadata.DEFAULT)
-                                    // if it's inactive, it means no processing is needed
-                                    if (sonicAudioProcessor.isActive) {
-                                        val input =
-                                            ByteBuffer.wrap(segment)
-                                                .order(ByteOrder.nativeOrder())
-                                        sonicAudioProcessor.queueInput(input)
-                                        sonicAudioProcessor.queueEndOfStream()
-                                        var concatenatedOutputBuffers =
-                                            SonicAudioProcessor.EMPTY_BUFFER
-                                        while (true) {
-                                            val outputBuffer = sonicAudioProcessor.output
-                                            if (!outputBuffer.hasRemaining()) {
-                                                break
-                                            }
-                                            val temp = ByteBuffer.allocateDirect(
-                                                concatenatedOutputBuffers.remaining() + outputBuffer.remaining()
-                                            ).order(ByteOrder.nativeOrder())
-                                            temp.put(concatenatedOutputBuffers)
-                                            temp.put(outputBuffer)
-                                            temp.rewind()
-                                            concatenatedOutputBuffers = temp
-                                        }
-                                        segment =
-                                            ByteArray(concatenatedOutputBuffers.remaining())
-                                        concatenatedOutputBuffers.get(segment)
-                                    }
-
-                                    val bufferSize = callback.maxBufferSize
-                                    for (i in segment.indices step bufferSize) {
-                                        val endBufferSize =
-                                            min(i + bufferSize, segment.lastIndex)
-                                        val result =
-                                            callback.audioAvailable(
-                                                segment,
-                                                i,
-                                                endBufferSize - i
-                                            )
-                                        if (timeToFirstAudio == null) {
-                                            timeToFirstAudio =
-                                                SystemClock.elapsedRealtime() - startTime
-                                            Log.d(TAG, "time-to-first-audio: $timeToFirstAudio")
-                                        }
-                                        if (result == TextToSpeech.STOPPED) {
-                                            return@launch
-                                        } else if (result == TextToSpeech.ERROR) {
-                                            callback.error(TextToSpeech.ERROR_OUTPUT)
-                                            return@launch
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        callback.error(TextToSpeech.ERROR_INVALID_REQUEST)
-                        return@launch
-                    }
-                } finally {
-                    callback.done()
-                }
+        if (callback.hasStarted()) {
+            val res = callback.done()
+            if (res != TextToSpeech.SUCCESS && request === this.currentSynthesisRequest) {
+                Log.d(TAG, "onSynthesizeText: callback.done() returned ${statusToString(res)}")
             }
-            synthesizeTextJob = currentJob
-            currentJob.start()
         }
-
-        runBlocking {
-            currentJob.join()
-        }
+        currentSynthesisRequest = null
     }
 
     override fun onStop() {
-        synthesizeTextJob?.let { job ->
-            if (!job.isCompleted) {
-                verboseLog(TAG) { "onStop: calling cancel on synthesizeTextJob" }
-                job.cancel()
-                verboseLog(TAG) { "onStop: called cancel on synthesizeTextJob" }
+        val curRequest = currentSynthesisRequest
+        currentSynthesisRequest = null
+        verboseLog(TAG) {
+            if (curRequest != null) {
+                "onStop: canceled current SynthesisRequest"
+            } else {
+                "onStop: no current SynthesisRequest"
             }
+        }
+    }
+
+    @Throws(CancelledRequestException::class)
+    private fun synthesizeText(
+        request: SynthesisRequest,
+        callback: SynthesisCallback,
+        cancellationCheck: CancellationCheck,
+    ) {
+        var timeToFirstAudio = -1L
+        val startTime = SystemClock.elapsedRealtime()
+
+        val requestVoice = getAvailableVoiceByName(request.voiceName)
+            ?: checkLanguageAvailability(
+                request.language,
+                request.country,
+                request.variant,
+            ).voice
+        if (requestVoice == null) {
+            callback.error(TextToSpeech.ERROR_INVALID_REQUEST)
+            return
+        }
+
+        val voiceResources = prepareVoiceResourcesAsync(requestVoice)
+
+        val startRet = callback.start(22050, AudioFormat.ENCODING_PCM_16BIT, 1)
+
+        if (startRet != TextToSpeech.SUCCESS) {
+            if (startRet != TextToSpeech.STOPPED) {
+                Log.e(TAG, "SynthesisCallback.start() returned ${statusToString(startRet)}")
+            }
+            return
+        }
+
+        val ortEnv = OrtEnvironment.getEnvironment()
+
+        // TODO: support rangeStart()
+
+        val lengthScale = OnnxTensor.createTensor(
+            ortEnv,
+            allocateDirectFloatBuffer(1).apply {
+                put(1f)
+                flip()
+            },
+            longArrayOf(1),
+        )
+
+        val maxCallbackBufSize = callback.maxBufferSize
+        val callbackBuffer = cachedAudioCallbackByteBuf.let { cache ->
+            if (cache != null && cache.size >= maxCallbackBufSize) {
+                cache
+            } else {
+                ByteArray(maxCallbackBufSize).also { cachedAudioCallbackByteBuf = it }
+            }
+        }
+
+        sonicAudioProcessor.apply {
+            setOutputSampleRateHz(SonicAudioProcessor.SAMPLE_RATE_NO_CHANGE)
+            configure(
+                AudioProcessor.AudioFormat(
+                    22050,
+                    1,
+                    C.ENCODING_PCM_FLOAT,
+                ),
+            )
+            setSpeed(request.speechRate / 100F)
+            setPitch(request.pitch / 100F)
+        }
+
+        TextSplitter(request.charSequenceText).forEach { chunk ->
+            cancellationCheck()
+
+            val phonemeText = voiceResources.englishPhonemizer.get().main(chunk, cancellationCheck)
+
+            verboseLog(TAG) { "Queued phonemes: ${phonemeText.first}" }
+            val queuePhoneIds =
+                symbolTokenizer.encodeToIds(phonemeText.first)
+
+            val x = OnnxTensor.createTensor(ortEnv, arrayOf(queuePhoneIds))
+            val xLengths = OnnxTensor.createTensor(
+                ortEnv,
+                longArrayOf(queuePhoneIds.size.toLong()),
+            )
+
+            // Should be set to the input length that's supported by the decoder.
+            val yMaxLengthInBatch = 64
+
+            val encoder = voiceResources.encoder.get()
+            val (yLengths, muY, yMask) =
+                encoder.run(x, xLengths, lengthScale).use { result ->
+                    @Suppress("UNCHECKED_CAST")
+                    Triple(
+                        result[0].value as LongArray,
+                        result[1].value as Array<Array<FloatArray>>,
+                        result[2].value as Array<Array<FloatArray>>,
+                    )
+                }
+            val firstYLength = yLengths[0]
+            val yLengthBatchesSize =
+                ceil(firstYLength.toFloat() / yMaxLengthInBatch.toFloat()).toInt()
+            for (splitIndex in 0..<yLengthBatchesSize) {
+                val startOfRange = splitIndex * yMaxLengthInBatch
+                val rangeLength = yMaxLengthInBatch
+                val endOfRange = startOfRange + rangeLength
+                verboseLog(TAG) {
+                    "onSynthesizeText decoding: startOfRange: $startOfRange, endOfRange: $endOfRange"
+                }
+                val muYb = getCachedFloatByteBuffer1(muY[0].size * rangeLength).floatBuffer
+                for (secondDimObject in muY[0]) {
+                    muYb.put(
+                        secondDimObject,
+                        startOfRange,
+                        min(
+                            rangeLength,
+                            secondDimObject.size - startOfRange,
+                        ),
+                    )
+                    repeat(endOfRange - secondDimObject.size) {
+                        muYb.put(0f)
+                    }
+                }
+                muYb.flip()
+
+                val yMaskBuf = getCachedFloatByteBuffer2(yMask[0].size * rangeLength).floatBuffer
+
+                for (secondDimObject in yMask[0]) {
+                    val copyLength = min(rangeLength, secondDimObject.size - startOfRange)
+                    yMaskBuf.put(secondDimObject, startOfRange, copyLength)
+                    repeat(rangeLength - copyLength) {
+                        yMaskBuf.put(1f)
+                    }
+                }
+                yMaskBuf.flip()
+                val pcmFloats = voiceResources.decoder.get().run(
+                    OnnxTensor.createTensor(
+                        ortEnv,
+                        muYb,
+                        longArrayOf(1, muY[0].size.toLong(), rangeLength.toLong()),
+                    ),
+                    OnnxTensor.createTensor(
+                        ortEnv,
+                        yMaskBuf,
+                        longArrayOf(1, yMask[0].size.toLong(), rangeLength.toLong()),
+                    ),
+                    OnnxTensor.createTensor(
+                        ortEnv,
+                        LongBuffer.wrap(longArrayOf(5)),
+                        longArrayOf(1),
+                    ),
+                ).use { result ->
+                    @Suppress("UNCHECKED_CAST")
+                    (result[0].value as Array<FloatArray>)[0]
+                }
+                val unpaddedSize = (min(endOfRange, firstYLength.toInt()) - startOfRange) * 256
+
+                val input = getCachedFloatByteBuffer1(unpaddedSize)
+                input.floatBuffer.put(pcmFloats, 0, unpaddedSize)
+                input.byteBuffer.limit(unpaddedSize * Float.SIZE_BYTES)
+
+                val result: ByteBuffer
+                if (!sonicAudioProcessor.isActive) {
+                    // no processing is needed
+                    result = input.byteBuffer
+                } else {
+                    sonicAudioProcessor.flush(AudioProcessor.StreamMetadata.DEFAULT)
+                    sonicAudioProcessor.queueInput(input.byteBuffer)
+                    sonicAudioProcessor.queueEndOfStream()
+                    result = sonicAudioProcessor.getOutput()
+                }
+
+                val resultFloat = result.asFloatBuffer()
+
+                val floatBufferSize = maxCallbackBufSize / 2
+                for (i in 0 until resultFloat.limit() step floatBufferSize) {
+                    cancellationCheck()
+
+                    val chunkLength = min(floatBufferSize, resultFloat.limit() - i)
+
+                    // convert audio to PCM_S16LE since PCM_FLOAT is not supported by
+                    // SynthesisCallback.audioAvailable() as of SDK 36.1
+                    for (chunkIdx in 0 until chunkLength) {
+                        val sample = (
+                            resultFloat.get(i + chunkIdx)
+                                .coerceIn(-1f, 1f) * 32767.0f
+                            ).toInt()
+                        val off = chunkIdx shl 1
+                        callbackBuffer[off] = (sample and 0xFF).toByte()
+                        callbackBuffer[off + 1] = ((sample ushr 8) and 0xFF).toByte()
+                    }
+
+                    if (timeToFirstAudio == -1L) {
+                        timeToFirstAudio =
+                            SystemClock.elapsedRealtime() - startTime
+                        Log.d(TAG, "time-to-first-audio: $timeToFirstAudio")
+                    }
+
+                    val result = callback.audioAvailable(callbackBuffer, 0, chunkLength shl 1)
+
+                    if (result != TextToSpeech.SUCCESS) {
+                        if (currentSynthesisRequest === request) {
+                            Log.d(TAG, "audioAvailable returned ${statusToString(result)}")
+                        } else {
+                            verboseLog(TAG) { "audioAvailable returned ${statusToString(result)}" }
+                        }
+                        if (result != TextToSpeech.STOPPED) {
+                            callback.error(TextToSpeech.ERROR_OUTPUT)
+                        }
+                        return
+                    }
+                }
+                check(!sonicAudioProcessor.output.hasRemaining())
+            }
+        }
+    }
+
+    // should be used only on the synthesis thread
+    private var cachedAudioCallbackByteBuf: ByteArray? = null
+    private var cachedFloatByteBuffer1: FloatByteBuffer? = null
+    private var cachedFloatByteBuffer2: FloatByteBuffer? = null
+
+    // should be called on the synthesis thread
+    private fun getCachedFloatByteBuffer1(requiredCapacity: Int): FloatByteBuffer {
+        return FloatByteBuffer.getOrAlloc(cachedFloatByteBuffer1, requiredCapacity) {
+            cachedFloatByteBuffer1 =
+                it
+        }
+    }
+
+    // should be called on the synthesis thread
+    private fun getCachedFloatByteBuffer2(requiredCapacity: Int): FloatByteBuffer {
+        return FloatByteBuffer.getOrAlloc(cachedFloatByteBuffer2, requiredCapacity) {
+            cachedFloatByteBuffer2 =
+                it
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        Log.d(TAG, "onTrimMemory: $level")
+        if (level >= TRIM_MEMORY_BACKGROUND) {
+            cachedFloatByteBuffer1 = null
+            cachedFloatByteBuffer2 = null
+            cachedAudioCallbackByteBuf = null
         }
     }
 
     override fun onDestroy() {
+        Log.d(TAG, "onDestroy")
         super.onDestroy()
-        loadVoiceJob?.cancel()
-        loadVoiceInBackgroundJob?.cancel()
-        synthesizeTextJob?.cancel()
-        encoder?.close()
-        decoder?.close()
-        englishPhonemizer?.close()
+        currentSynthesisRequest = null
+        voiceResourcesInitLock.withLock {
+            voiceResources?.let {
+                voiceInitExecutor.submit<Unit> {
+                    it.close()
+                }
+                voiceResources = null
+            }
+        }
         sonicAudioProcessor.reset()
+    }
+
+    private fun statusToString(status: Int): String {
+        return when (status) {
+            TextToSpeech.SUCCESS -> "SUCCESS"
+            TextToSpeech.ERROR -> "ERROR"
+            TextToSpeech.STOPPED -> "STOPPED"
+            else -> status.toString()
+        }
     }
 }
