@@ -1,9 +1,11 @@
 package app.grapheneos.speechservices.g2p.fallback_network
 
-data class G2PTokenizerConfig(
-    val graphemeChars: String,
-    val phonemeChars: String,
-)
+import androidx.collection.IntIntMap
+import androidx.collection.buildIntIntMap
+
+data class G2PTokenizerConfig(val graphemeChars: String, val phonemeChars: String)
+
+private const val MAX_SPECIAL_ID = 3 // see 'unk' below
 
 class G2PTokenizer(config: G2PTokenizerConfig) {
     private val pad = Pair(0, "<pad>")
@@ -18,13 +20,17 @@ class G2PTokenizer(config: G2PTokenizerConfig) {
     private val phonemeList =
         special.map { it.second } + config.phonemeChars.trimStart('_').map { it.toString() }
 
-    private val tokenToId = HashMap<String, Int>().apply {
-        graphemeList.forEachIndexed { index, token -> put(token, index) }
-        phonemeList.forEachIndexed { index, token -> put(token, index) }
-    }
-
-    private val idToPhoneme = HashMap<Int, String>().apply {
-        phonemeList.forEachIndexed { index, token -> put(index, token) }
+    private val tokenToId: IntIntMap = buildIntIntMap {
+        graphemeList.forEachIndexed { index, token ->
+            if (token.length == 1) {
+                put(token.first().code, index)
+            }
+        }
+        phonemeList.forEachIndexed { index, token ->
+            if (token.length == 1) {
+                put(token.first().code, index)
+            }
+        }
     }
 
     /**
@@ -33,13 +39,16 @@ class G2PTokenizer(config: G2PTokenizerConfig) {
      * Encodes unknown characters as [unk].
      */
     fun encodeWord(word: String): LongArray {
-        val ids = ArrayList<Int>(word.length + 2)
-        ids.add(bos.first)
+        val ids = LongArray(word.length + 2)
+        val unkId = unk.first
+        var index = 0
+        ids[index++] = bos.first.toLong()
         for (char in word) {
-            ids.add(tokenToId[char.toString()] ?: unk.first)
+            ids[index++] = tokenToId.getOrDefault(char.code, unkId).toLong()
         }
-        ids.add(eos.first)
-        return ids.map { it.toLong() }.toLongArray()
+        ids[index++] = eos.first.toLong()
+        check(index == ids.size)
+        return ids
     }
 
     /**
@@ -49,14 +58,17 @@ class G2PTokenizer(config: G2PTokenizerConfig) {
      */
     fun decodePhonemes(ids: LongArray): String {
         val stringBuilder = StringBuilder()
-        for (id in ids) {
+        for (idLong in ids) {
+            val id = idLong.toInt()
             // skip special tokens
-            if (special.any { it.first == id.toInt() }) {
+            if (id <= MAX_SPECIAL_ID) {
                 continue
             }
-            stringBuilder.append(
-                idToPhoneme[id.toInt()] ?: error("ID ${id.toInt()} not found in idToPhoneme!")
-            )
+            if (id >= phonemeList.size) {
+                error("ID $id not found in idToPhoneme!")
+            } else {
+                stringBuilder.append(phonemeList[id])
+            }
         }
         return stringBuilder.toString()
     }
