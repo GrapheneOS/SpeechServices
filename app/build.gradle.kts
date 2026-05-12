@@ -10,7 +10,6 @@ if (useKeystoreProperties) {
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
@@ -35,7 +34,7 @@ android {
     }
 
     namespace = "app.grapheneos.speechservices"
-    compileSdk = 36
+    compileSdk = 37
     buildToolsVersion = "36.1.0"
     ndkVersion = "29.0.14206865"
 
@@ -94,21 +93,20 @@ android {
 }
 
 dependencies {
-
-    implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
-    implementation(libs.androidx.compose.material3)
-    implementation(libs.onnxruntime.android)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.media3.common.ktx)
     implementation(libs.apache.opennlp.tools)
-    implementation(libs.slf4j.nop)
-    implementation(libs.kotlinx.serialization.json)
     implementation(libs.icu4j)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.onnxruntime.android)
+    implementation(libs.slf4j.nop)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
