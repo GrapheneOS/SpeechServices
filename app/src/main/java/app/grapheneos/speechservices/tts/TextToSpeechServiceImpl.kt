@@ -164,7 +164,7 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
 
     private var decoder: Decoder? = null
 
-    private val symbolTokenizer: SymbolTokenizer by lazy { SymbolTokenizer() }
+    private val symbolTokenizer = SymbolTokenizer()
 
     private var englishPhonemizer: EnglishPhonemizer? = null
 
@@ -178,7 +178,7 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
         }
     }
 
-    private val sonicAudioProcessor: SonicAudioProcessor by lazy { SonicAudioProcessor() }
+    private val sonicAudioProcessor = SonicAudioProcessor()
 
     override fun onGetVoices(): List<Voice> {
         return supportedVoices
