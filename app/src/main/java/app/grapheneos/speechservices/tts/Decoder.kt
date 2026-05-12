@@ -5,8 +5,8 @@ import ai.onnxruntime.OnnxTensor.createTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.res.AssetFileDescriptor
-import java.nio.FloatBuffer
-import java.nio.channels.FileChannel
+import app.grapheneos.speechservices.allocateDirectFloatBuffer
+import app.grapheneos.speechservices.createOrtSession
 
 /**
  * Converts encoder output into audio.
@@ -15,29 +15,15 @@ import java.nio.channels.FileChannel
  */
 class Decoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession
-    private val temperature: OnnxTensor
-
-    init {
-        val sessionOptions = OrtSession.SessionOptions()
-
-        modelFileDescriptor.createInputStream().use { inputStream ->
-            val fileChannel = inputStream.channel
-            val startOffset = modelFileDescriptor.startOffset
-            val declaredLength = modelFileDescriptor.declaredLength
-
-            session = env.createSession(
-                fileChannel.map(
-                    FileChannel.MapMode.READ_ONLY,
-                    startOffset,
-                    declaredLength,
-                ),
-                sessionOptions,
-            )
-        }
-
-        temperature = createTensor(env, FloatBuffer.wrap(floatArrayOf(0.667F)), longArrayOf(1))
-    }
+    private val session: OrtSession = createOrtSession(env, modelFileDescriptor)
+    private val temperature: OnnxTensor = createTensor(
+        env,
+        allocateDirectFloatBuffer(1).apply {
+            put(0.667f)
+            flip()
+        },
+        longArrayOf(1),
+    )
 
     /**
      * @param muY Actual encoder output. See [Encoder.run].
@@ -59,7 +45,7 @@ class Decoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
         muY: OnnxTensor,
         yMask: OnnxTensor,
         nTimesteps: OnnxTensor,
-        spks: OnnxTensor? = null
+        spks: OnnxTensor? = null,
     ): OrtSession.Result {
         val inputs = HashMap<String, OnnxTensor>()
         inputs["mu_y"] = muY

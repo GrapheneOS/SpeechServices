@@ -4,37 +4,18 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.res.AssetFileDescriptor
+import app.grapheneos.speechservices.createOrtSession
 import app.grapheneos.speechservices.g2p.MToken
-import java.nio.channels.FileChannel
 
 /**
  * Converts graphemes to phonemes.
  */
 class FallbackNetwork(
     modelFileDescriptor: AssetFileDescriptor,
-    private val tokenizer: G2PTokenizer
+    private val tokenizer: G2PTokenizer,
 ) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession
-
-    init {
-        val sessionOptions = OrtSession.SessionOptions()
-
-        modelFileDescriptor.createInputStream().use { inputStream ->
-            val fileChannel = inputStream.channel
-            val startOffset = modelFileDescriptor.startOffset
-            val declaredLength = modelFileDescriptor.declaredLength
-
-            session = env.createSession(
-                fileChannel.map(
-                    FileChannel.MapMode.READ_ONLY,
-                    startOffset,
-                    declaredLength,
-                ),
-                sessionOptions,
-            )
-        }
-    }
+    private val session: OrtSession = createOrtSession(env, modelFileDescriptor)
 
     /**
      * Convert the token text to input IDs and run them through the model to get phonemes.

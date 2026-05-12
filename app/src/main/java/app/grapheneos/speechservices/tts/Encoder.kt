@@ -4,7 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.res.AssetFileDescriptor
-import java.nio.channels.FileChannel
+import app.grapheneos.speechservices.createOrtSession
 
 /**
  * Converts input IDs into encoder output, to be decoded into audio by the [Decoder].
@@ -15,26 +15,7 @@ import java.nio.channels.FileChannel
  */
 class Encoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession
-
-    init {
-        val sessionOptions = OrtSession.SessionOptions()
-
-        modelFileDescriptor.createInputStream().use { inputStream ->
-            val fileChannel = inputStream.channel
-            val startOffset = modelFileDescriptor.startOffset
-            val declaredLength = modelFileDescriptor.declaredLength
-
-            session = env.createSession(
-                fileChannel.map(
-                    FileChannel.MapMode.READ_ONLY,
-                    startOffset,
-                    declaredLength,
-                ),
-                sessionOptions,
-            )
-        }
-    }
+    private val session: OrtSession = createOrtSession(env, modelFileDescriptor)
 
     /**
      * @param x [Array] (length = batch size) of [LongArray] where each item in the first dimension
@@ -68,7 +49,7 @@ class Encoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
         x: OnnxTensor,
         xLengths: OnnxTensor,
         lengthScale: OnnxTensor,
-        spks: OnnxTensor? = null
+        spks: OnnxTensor? = null,
     ): OrtSession.Result {
         val inputs = HashMap<String, OnnxTensor>()
         inputs["x"] = x
