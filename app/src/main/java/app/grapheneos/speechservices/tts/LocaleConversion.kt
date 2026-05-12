@@ -25,27 +25,25 @@ import java.util.Locale
 import java.util.MissingResourceException
 
 private val deprecatedToModernLanguage by lazy {
-    val mutableMap = mutableMapOf<String, String>()
-    for (language in Locale.getISOLanguages()) {
-        try {
-            mutableMap[Locale.of(language).getISO3Language()] = language
-        } catch (_: MissingResourceException) {
-            continue
+    val languages = Locale.getISOLanguages()
+    buildMap(languages.size) {
+        for (language in languages) {
+            try {
+                put(Locale.of(language).getISO3Language(), language)
+            } catch (_: MissingResourceException) {}
         }
     }
-    mutableMap.toMap()
 }
 
 private val deprecatedToModernCountry by lazy {
-    val mutableMap = mutableMapOf<String, String>()
-    for (country in Locale.getISOCountries()) {
-        try {
-            mutableMap[Locale.of("", country).getISO3Country()] = country
-        } catch (_: MissingResourceException) {
-            continue
+    val countries = Locale.getISOCountries()
+    buildMap(countries.size) {
+        for (country in countries) {
+            try {
+                put(Locale.of("", country).getISO3Country(), country)
+            } catch (_: MissingResourceException) {}
         }
     }
-    mutableMap.toMap()
 }
 
 /**
