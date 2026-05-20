@@ -865,17 +865,17 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 word.replace(",", "").split('.').zip(CURRENCIES[currency]!!).map { (num, unit) ->
                     Pair(
                         if (num.isNotEmpty()) {
-                            num.toInt()
+                            num.toLongOrNull() ?: 0L
                         } else {
-                            0
+                            0L
                         },
                         unit,
                     )
                 }
             if (pairs.size > 1) {
-                if (pairs[1].first == 0) {
+                if (pairs[1].first == 0L) {
                     pairs = pairs.take(1)
-                } else if (pairs[0].first == 0) {
+                } else if (pairs[0].first == 0L) {
                     pairs = pairs.drop(1)
                 }
             }
@@ -886,7 +886,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 }
                 extendNum(num.toString(), first = index == 0)
                 result.add(
-                    if (num.absoluteValue != 1 && unit != "pence") {
+                    if (num.absoluteValue != 1L && unit != "pence") {
                         this.stemS(unit + "s", null, null, null)
                     } else {
                         this.lookup(unit, null, null, null)
@@ -1076,18 +1076,12 @@ class EnglishPhonemizer(
         val text = text.trimStart()
         for (m in LINK_REGEX.findAll(text)) {
             result.append(text, lastEnd, m.range.first)
-            tokens.addAll(text.substring(lastEnd, m.range.first).trim().split(Regex("""\\s+""")))
+            tokens.addAll(text.substring(lastEnd, m.range.first).trim().split(Regex("""\s+""")))
             val thirdGroupValue = m.groupValues[2]
             var feature: FeatureValue? = null
-            if (isAsciiNumber(
-                    if (thirdGroupValue.take(1) in setOf("-", "+")) {
-                        thirdGroupValue[1].toString()
-                    } else {
-                        thirdGroupValue
-                    },
-                )
-            ) {
-                feature = FeatureValue.IntValue(thirdGroupValue.toInt())
+            val intValue = thirdGroupValue.toIntOrNull()
+            if (intValue != null) {
+                feature = FeatureValue.IntValue(intValue)
             } else if (thirdGroupValue == "0.5" || thirdGroupValue == "+0.5") {
                 feature = FeatureValue.DoubleValue(0.5)
             } else if (thirdGroupValue == "-0.5") {
@@ -1112,11 +1106,11 @@ class EnglishPhonemizer(
             }
             result.append(m.groupValues[1])
             tokens.add(m.groupValues[1])
-            lastEnd = m.range.last
+            lastEnd = m.range.last + 1
         }
         if (lastEnd < text.length) {
             result.append(text, lastEnd, text.length)
-            tokens.addAll(text.drop(lastEnd).trim().split(Regex("""\\s+""")))
+            tokens.addAll(text.drop(lastEnd).trim().split(Regex("""\s+""")))
         }
         return Triple(result.toString(), tokens, features)
     }
