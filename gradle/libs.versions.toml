@@ -11,7 +11,7 @@ ktlint-gradle = "14.2.0"
 lifecycleRuntimeKtx = "2.10.0"
 media3CommonKtx = "1.10.1"
 onnxruntimeAndroid = "1.26.0"
-openNlp = "2.5.7"
+openNlp = "2.5.8"
 slf4j = "2.0.18"
 
 [libraries]
