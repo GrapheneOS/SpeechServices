@@ -53,9 +53,14 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = versionCode.toString()
+    }
 
-        ndk {
-            abiFilters.retainAll(listOf("arm64-v8a", "x86_64"))
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = false
         }
     }
 
