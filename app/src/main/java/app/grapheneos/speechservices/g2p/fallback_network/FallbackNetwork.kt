@@ -1,9 +1,9 @@
 package app.grapheneos.speechservices.g2p.fallback_network
 
 import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.res.AssetFileDescriptor
+import app.grapheneos.speechservices.OrtSessionWrapper
 import app.grapheneos.speechservices.createOrtSession
 import app.grapheneos.speechservices.g2p.MToken
 
@@ -14,8 +14,7 @@ class FallbackNetwork(
     modelFileDescriptor: AssetFileDescriptor,
     private val tokenizer: G2PTokenizer,
 ) : AutoCloseable {
-    private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = createOrtSession(env, modelFileDescriptor)
+    private val session: OrtSessionWrapper = createOrtSession(modelFd = modelFileDescriptor)
 
     /**
      * Convert the token text to input IDs and run them through the model to get phonemes.
@@ -26,11 +25,20 @@ class FallbackNetwork(
         //  due to losing context and bad chunk timing.
         // TODO: A model trained with RoPE should not have these issues.
         val outputText = token.text.chunked(11).joinToString("") { chunk ->
-            val result =
-                this.run(OnnxTensor.createTensor(env, arrayOf(tokenizer.encodeWord(chunk))))
-            val outputIds = result[0].value as Array<*>
+            val outputIds: LongArray
+            OnnxTensor.createTensor(
+                session.env,
+                arrayOf(tokenizer.encodeWord(chunk)),
+            ).use { inputIds ->
+                runInner(inputIds).use { result ->
+                    check(result.size() == 1)
+                    val wrapper = result[0].value as Array<*>
+                    check(wrapper.size == 1)
+                    outputIds = wrapper[0] as LongArray
+                }
+            }
 
-            return@joinToString tokenizer.decodePhonemes(outputIds[0] as LongArray)
+            return@joinToString tokenizer.decodePhonemes(outputIds)
         }
         return Pair(outputText, 1)
     }
@@ -44,11 +52,11 @@ class FallbackNetwork(
      * Return result index to value list:
      * 1. `outputIds` - Output phoneme IDs. [Array] (length = batch size) of [LongArray].
      */
-    fun run(inputIds: OnnxTensor): OrtSession.Result {
+    private fun runInner(inputIds: OnnxTensor): OrtSession.Result {
         val inputs = HashMap<String, OnnxTensor>()
         inputs["input_ids"] = inputIds
 
-        return session.run(inputs)
+        return session.inner.run(inputs)
     }
 
     override fun close() {

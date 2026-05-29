@@ -1,6 +1,7 @@
 package app.grapheneos.speechservices
 
 import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtException
 import ai.onnxruntime.OrtSession
 import android.content.res.AssetFileDescriptor
 import android.util.Log
@@ -54,14 +55,39 @@ fun allocateDirectFloatBuffer(capacity: Int): FloatBuffer {
     ).order(ByteOrder.nativeOrder()).asFloatBuffer()
 }
 
+class OrtSessionWrapper(
+    val env: OrtEnvironment,
+    val inner: OrtSession,
+    val opts: OrtSession.SessionOptions,
+) : AutoCloseable {
+    override fun close() {
+        try {
+            inner.close()
+        } catch (e: OrtException) {
+            Log.e("OrtSessionWrapper", "unable to close OrtSession", e)
+        }
+        opts.close()
+    }
+}
+
 fun createOrtSession(
-    env: OrtEnvironment,
+    env: OrtEnvironment = OrtEnvironment.getEnvironment(),
     modelFd: AssetFileDescriptor,
-    opts: OrtSession.SessionOptions = OrtSession.SessionOptions(),
-): OrtSession {
-    return modelFd.createInputStream().use { inputStream ->
+    optsSupplier: () -> OrtSession.SessionOptions = { OrtSession.SessionOptions() },
+): OrtSessionWrapper {
+    modelFd.createInputStream().use { inputStream ->
         val modelBuf = inputStream.channel
             .map(FileChannel.MapMode.READ_ONLY, modelFd.startOffset, modelFd.declaredLength)
-        env.createSession(modelBuf, opts)
+        val opts = optsSupplier()
+        var closeOpts = true
+        try {
+            val session = env.createSession(modelBuf, opts)
+            closeOpts = false
+            return OrtSessionWrapper(env, session, opts)
+        } finally {
+            if (closeOpts) {
+                opts.close()
+            }
+        }
     }
 }

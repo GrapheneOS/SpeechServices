@@ -1,10 +1,13 @@
 package app.grapheneos.speechservices.tts
 
 import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OnnxTensor.createTensor
 import ai.onnxruntime.OrtSession
 import android.content.res.AssetFileDescriptor
+import app.grapheneos.speechservices.OrtSessionWrapper
+import app.grapheneos.speechservices.allocateDirectFloatBuffer
 import app.grapheneos.speechservices.createOrtSession
+import kotlin.use
 
 /**
  * Converts input IDs into encoder output, to be decoded into audio by the [Decoder].
@@ -14,8 +17,45 @@ import app.grapheneos.speechservices.createOrtSession
  * sentence context in the generated speech.
  */
 class Encoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
-    private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = createOrtSession(env, modelFileDescriptor)
+    private val session: OrtSessionWrapper = createOrtSession(modelFd = modelFileDescriptor)
+
+    class Result(val yLength: Long, val muY: Array<FloatArray>, val yMask: Array<FloatArray>)
+
+    fun run(queuePhoneIds: LongArray): Result {
+        val env = session.env
+        createTensor(env, arrayOf(queuePhoneIds)).use { x ->
+            createTensor(
+                env,
+                longArrayOf(queuePhoneIds.size.toLong()),
+            ).use { xLengths ->
+                createTensor(
+                    env,
+                    allocateDirectFloatBuffer(1).apply {
+                        put(1f)
+                        flip()
+                    },
+                    longArrayOf(1),
+                ).use { lengthScale ->
+                    runInner(x, xLengths, lengthScale).use { result ->
+                        check(result.size() == 3)
+                        val yLengths = result[0].value as LongArray
+                        check(yLengths.size == 1)
+                        @Suppress("UNCHECKED_CAST")
+                        val muYs = result[1].value as Array<Array<FloatArray>>
+                        check(muYs.size == 1)
+                        @Suppress("UNCHECKED_CAST")
+                        val yMasks = result[2].value as Array<Array<FloatArray>>
+                        check(yMasks.size == 1)
+                        return Result(
+                            yLengths[0],
+                            muYs[0],
+                            yMasks[0],
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     /**
      * @param x [Array] (length = batch size) of [LongArray] where each item in the first dimension
@@ -45,7 +85,7 @@ class Encoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
      * the same first dimensional index in return value `muY` to use for the part of the decoder
      * output represented by the index of that item.
      */
-    fun run(
+    private fun runInner(
         x: OnnxTensor,
         xLengths: OnnxTensor,
         lengthScale: OnnxTensor,
@@ -59,7 +99,7 @@ class Encoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
             inputs["spks"] = spks
         }
 
-        return session.run(inputs)
+        return session.inner.run(inputs)
     }
 
     override fun close() {

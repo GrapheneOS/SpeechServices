@@ -1,6 +1,5 @@
 package app.grapheneos.speechservices.tts
 
-import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import android.media.AudioFormat
 import android.os.SystemClock
@@ -13,10 +12,8 @@ import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.SonicAudioProcessor
-import app.grapheneos.speechservices.allocateDirectFloatBuffer
 import app.grapheneos.speechservices.verboseLog
 import java.nio.ByteBuffer
-import java.nio.LongBuffer
 import java.util.concurrent.Executors
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -214,18 +211,7 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
             return
         }
 
-        val ortEnv = OrtEnvironment.getEnvironment()
-
         // TODO: support rangeStart()
-
-        val lengthScale = OnnxTensor.createTensor(
-            ortEnv,
-            allocateDirectFloatBuffer(1).apply {
-                put(1f)
-                flip()
-            },
-            longArrayOf(1),
-        )
 
         val maxCallbackBufSize = callback.maxBufferSize
         val callbackBuffer = cachedAudioCallbackByteBuf.let { cache ->
@@ -258,94 +244,33 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
             val queuePhoneIds =
                 symbolTokenizer.encodeToIds(phonemeText.first)
 
-            val x = OnnxTensor.createTensor(ortEnv, arrayOf(queuePhoneIds))
-            val xLengths = OnnxTensor.createTensor(
-                ortEnv,
-                longArrayOf(queuePhoneIds.size.toLong()),
-            )
-
             // Should be set to the input length that's supported by the decoder.
             val yMaxLengthInBatch = 64
 
-            val encoder = voiceResources.encoder.get()
-            val (yLengths, muY, yMask) =
-                encoder.run(x, xLengths, lengthScale).use { result ->
-                    @Suppress("UNCHECKED_CAST")
-                    Triple(
-                        result[0].value as LongArray,
-                        result[1].value as Array<Array<FloatArray>>,
-                        result[2].value as Array<Array<FloatArray>>,
-                    )
-                }
-            val firstYLength = yLengths[0]
+            val encoderRes = voiceResources.encoder.get().run(queuePhoneIds)
             val yLengthBatchesSize =
-                ceil(firstYLength.toFloat() / yMaxLengthInBatch.toFloat()).toInt()
+                ceil(encoderRes.yLength.toFloat() / yMaxLengthInBatch.toFloat()).toInt()
             for (splitIndex in 0..<yLengthBatchesSize) {
                 val startOfRange = splitIndex * yMaxLengthInBatch
                 val rangeLength = yMaxLengthInBatch
-                val endOfRange = startOfRange + rangeLength
                 verboseLog(TAG) {
-                    "onSynthesizeText decoding: startOfRange: $startOfRange, endOfRange: $endOfRange"
+                    "onSynthesizeText decoding: startOfRange: $startOfRange, rangeLength: $rangeLength"
                 }
-                val muYb = getCachedFloatByteBuffer1(muY[0].size * rangeLength).floatBuffer
-                for (secondDimObject in muY[0]) {
-                    muYb.put(
-                        secondDimObject,
-                        startOfRange,
-                        min(
-                            rangeLength,
-                            secondDimObject.size - startOfRange,
-                        ),
-                    )
-                    repeat(endOfRange - secondDimObject.size) {
-                        muYb.put(0f)
-                    }
-                }
-                muYb.flip()
-
-                val yMaskBuf = getCachedFloatByteBuffer2(yMask[0].size * rangeLength).floatBuffer
-
-                for (secondDimObject in yMask[0]) {
-                    val copyLength = min(rangeLength, secondDimObject.size - startOfRange)
-                    yMaskBuf.put(secondDimObject, startOfRange, copyLength)
-                    repeat(rangeLength - copyLength) {
-                        yMaskBuf.put(1f)
-                    }
-                }
-                yMaskBuf.flip()
                 val pcmFloats = voiceResources.decoder.get().run(
-                    OnnxTensor.createTensor(
-                        ortEnv,
-                        muYb,
-                        longArrayOf(1, muY[0].size.toLong(), rangeLength.toLong()),
-                    ),
-                    OnnxTensor.createTensor(
-                        ortEnv,
-                        yMaskBuf,
-                        longArrayOf(1, yMask[0].size.toLong(), rangeLength.toLong()),
-                    ),
-                    OnnxTensor.createTensor(
-                        ortEnv,
-                        LongBuffer.wrap(longArrayOf(5)),
-                        longArrayOf(1),
-                    ),
-                ).use { result ->
-                    @Suppress("UNCHECKED_CAST")
-                    (result[0].value as Array<FloatArray>)[0]
-                }
-                val unpaddedSize = (min(endOfRange, firstYLength.toInt()) - startOfRange) * 256
-
-                val input = getCachedFloatByteBuffer1(unpaddedSize)
-                input.floatBuffer.put(pcmFloats, 0, unpaddedSize)
-                input.byteBuffer.limit(unpaddedSize * Float.SIZE_BYTES)
+                    encoderRes,
+                    startOfRange,
+                    rangeLength,
+                    ::getCachedFloatByteBuffer1,
+                    ::getCachedFloatByteBuffer2,
+                )
 
                 val result: ByteBuffer
                 if (!sonicAudioProcessor.isActive) {
                     // no processing is needed
-                    result = input.byteBuffer
+                    result = pcmFloats
                 } else {
                     sonicAudioProcessor.flush(AudioProcessor.StreamMetadata.DEFAULT)
-                    sonicAudioProcessor.queueInput(input.byteBuffer)
+                    sonicAudioProcessor.queueInput(pcmFloats)
                     sonicAudioProcessor.queueEndOfStream()
                     result = sonicAudioProcessor.getOutput()
                 }
