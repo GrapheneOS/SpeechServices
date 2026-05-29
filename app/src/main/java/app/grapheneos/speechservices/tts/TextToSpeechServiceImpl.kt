@@ -14,6 +14,7 @@ import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.SonicAudioProcessor
 import app.grapheneos.speechservices.allocateDirectFloatBuffer
+import app.grapheneos.speechservices.closeAll
 import app.grapheneos.speechservices.verboseLog
 import java.nio.ByteBuffer
 import java.nio.LongBuffer
@@ -218,180 +219,213 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
 
         // TODO: support rangeStart()
 
-        val lengthScale = OnnxTensor.createTensor(
-            ortEnv,
-            allocateDirectFloatBuffer(1).apply {
-                put(1f)
-                flip()
-            },
-            longArrayOf(1),
-        )
-
-        val maxCallbackBufSize = callback.maxBufferSize
-        val callbackBuffer = cachedAudioCallbackByteBuf.let { cache ->
-            if (cache != null && cache.size >= maxCallbackBufSize) {
-                cache
-            } else {
-                ByteArray(maxCallbackBufSize).also { cachedAudioCallbackByteBuf = it }
-            }
-        }
-
-        sonicAudioProcessor.apply {
-            setOutputSampleRateHz(SonicAudioProcessor.SAMPLE_RATE_NO_CHANGE)
-            configure(
-                AudioProcessor.AudioFormat(
-                    22050,
-                    1,
-                    C.ENCODING_PCM_FLOAT,
-                ),
-            )
-            setSpeed(request.speechRate / 100F)
-            setPitch(request.pitch / 100F)
-        }
-
-        TextSplitter(request.charSequenceText).forEach { chunk ->
-            cancellationCheck()
-
-            val phonemeText = voiceResources.englishPhonemizer.get().main(chunk, cancellationCheck)
-
-            verboseLog(TAG) { "Queued phonemes: ${phonemeText.first}" }
-            val queuePhoneIds =
-                symbolTokenizer.encodeToIds(phonemeText.first)
-
-            val x = OnnxTensor.createTensor(ortEnv, arrayOf(queuePhoneIds))
-            val xLengths = OnnxTensor.createTensor(
+        var lengthScale: OnnxTensor? = null
+        try {
+            lengthScale = OnnxTensor.createTensor(
                 ortEnv,
-                longArrayOf(queuePhoneIds.size.toLong()),
+                allocateDirectFloatBuffer(1).apply {
+                    put(1f)
+                    flip()
+                },
+                longArrayOf(1),
             )
 
-            // Should be set to the input length that's supported by the decoder.
-            val yMaxLengthInBatch = 64
-
-            val encoder = voiceResources.encoder.get()
-            val (yLengths, muY, yMask) =
-                encoder.run(x, xLengths, lengthScale).use { result ->
-                    @Suppress("UNCHECKED_CAST")
-                    Triple(
-                        result[0].value as LongArray,
-                        result[1].value as Array<Array<FloatArray>>,
-                        result[2].value as Array<Array<FloatArray>>,
-                    )
-                }
-            val firstYLength = yLengths[0]
-            val yLengthBatchesSize =
-                ceil(firstYLength.toFloat() / yMaxLengthInBatch.toFloat()).toInt()
-            for (splitIndex in 0..<yLengthBatchesSize) {
-                val startOfRange = splitIndex * yMaxLengthInBatch
-                val rangeLength = yMaxLengthInBatch
-                val endOfRange = startOfRange + rangeLength
-                verboseLog(TAG) {
-                    "onSynthesizeText decoding: startOfRange: $startOfRange, endOfRange: $endOfRange"
-                }
-                val muYb = getCachedFloatByteBuffer1(muY[0].size * rangeLength).floatBuffer
-                for (secondDimObject in muY[0]) {
-                    muYb.put(
-                        secondDimObject,
-                        startOfRange,
-                        min(
-                            rangeLength,
-                            secondDimObject.size - startOfRange,
-                        ),
-                    )
-                    repeat(endOfRange - secondDimObject.size) {
-                        muYb.put(0f)
-                    }
-                }
-                muYb.flip()
-
-                val yMaskBuf = getCachedFloatByteBuffer2(yMask[0].size * rangeLength).floatBuffer
-
-                for (secondDimObject in yMask[0]) {
-                    val copyLength = min(rangeLength, secondDimObject.size - startOfRange)
-                    yMaskBuf.put(secondDimObject, startOfRange, copyLength)
-                    repeat(rangeLength - copyLength) {
-                        yMaskBuf.put(1f)
-                    }
-                }
-                yMaskBuf.flip()
-                val pcmFloats = voiceResources.decoder.get().run(
-                    OnnxTensor.createTensor(
-                        ortEnv,
-                        muYb,
-                        longArrayOf(1, muY[0].size.toLong(), rangeLength.toLong()),
-                    ),
-                    OnnxTensor.createTensor(
-                        ortEnv,
-                        yMaskBuf,
-                        longArrayOf(1, yMask[0].size.toLong(), rangeLength.toLong()),
-                    ),
-                    OnnxTensor.createTensor(
-                        ortEnv,
-                        LongBuffer.wrap(longArrayOf(5)),
-                        longArrayOf(1),
-                    ),
-                ).use { result ->
-                    @Suppress("UNCHECKED_CAST")
-                    (result[0].value as Array<FloatArray>)[0]
-                }
-                val unpaddedSize = (min(endOfRange, firstYLength.toInt()) - startOfRange) * 256
-
-                val input = getCachedFloatByteBuffer1(unpaddedSize)
-                input.floatBuffer.put(pcmFloats, 0, unpaddedSize)
-                input.byteBuffer.limit(unpaddedSize * Float.SIZE_BYTES)
-
-                val result: ByteBuffer
-                if (!sonicAudioProcessor.isActive) {
-                    // no processing is needed
-                    result = input.byteBuffer
+            val maxCallbackBufSize = callback.maxBufferSize
+            val callbackBuffer = cachedAudioCallbackByteBuf.let { cache ->
+                if (cache != null && cache.size >= maxCallbackBufSize) {
+                    cache
                 } else {
-                    sonicAudioProcessor.flush(AudioProcessor.StreamMetadata.DEFAULT)
-                    sonicAudioProcessor.queueInput(input.byteBuffer)
-                    sonicAudioProcessor.queueEndOfStream()
-                    result = sonicAudioProcessor.getOutput()
+                    ByteArray(maxCallbackBufSize).also { cachedAudioCallbackByteBuf = it }
                 }
-
-                val resultFloat = result.asFloatBuffer()
-
-                val floatBufferSize = maxCallbackBufSize / 2
-                for (i in 0 until resultFloat.limit() step floatBufferSize) {
-                    cancellationCheck()
-
-                    val chunkLength = min(floatBufferSize, resultFloat.limit() - i)
-
-                    // convert audio to PCM_S16LE since PCM_FLOAT is not supported by
-                    // SynthesisCallback.audioAvailable() as of SDK 36.1
-                    for (chunkIdx in 0 until chunkLength) {
-                        val sample = (
-                            resultFloat.get(i + chunkIdx)
-                                .coerceIn(-1f, 1f) * 32767.0f
-                            ).toInt()
-                        val off = chunkIdx shl 1
-                        callbackBuffer[off] = (sample and 0xFF).toByte()
-                        callbackBuffer[off + 1] = ((sample ushr 8) and 0xFF).toByte()
-                    }
-
-                    if (timeToFirstAudio == -1L) {
-                        timeToFirstAudio =
-                            SystemClock.elapsedRealtime() - startTime
-                        Log.d(TAG, "time-to-first-audio: $timeToFirstAudio")
-                    }
-
-                    val result = callback.audioAvailable(callbackBuffer, 0, chunkLength shl 1)
-
-                    if (result != TextToSpeech.SUCCESS) {
-                        if (currentSynthesisRequest === request) {
-                            Log.d(TAG, "audioAvailable returned ${statusToString(result)}")
-                        } else {
-                            verboseLog(TAG) { "audioAvailable returned ${statusToString(result)}" }
-                        }
-                        if (result != TextToSpeech.STOPPED) {
-                            callback.error(TextToSpeech.ERROR_OUTPUT)
-                        }
-                        return
-                    }
-                }
-                check(!sonicAudioProcessor.output.hasRemaining())
             }
+
+            sonicAudioProcessor.apply {
+                setOutputSampleRateHz(SonicAudioProcessor.SAMPLE_RATE_NO_CHANGE)
+                configure(
+                    AudioProcessor.AudioFormat(
+                        22050,
+                        1,
+                        C.ENCODING_PCM_FLOAT,
+                    ),
+                )
+                setSpeed(request.speechRate / 100F)
+                setPitch(request.pitch / 100F)
+            }
+
+            TextSplitter(request.charSequenceText).forEach { chunk ->
+                cancellationCheck()
+
+                val phonemeText = voiceResources.englishPhonemizer.get().main(
+                    chunk,
+                    cancellationCheck,
+                )
+
+                verboseLog(TAG) { "Queued phonemes: ${phonemeText.first}" }
+                val queuePhoneIds =
+                    symbolTokenizer.encodeToIds(phonemeText.first)
+
+                var x: OnnxTensor? = null
+                var xLengths: OnnxTensor? = null
+                try {
+                    x = OnnxTensor.createTensor(ortEnv, arrayOf(queuePhoneIds))
+                    xLengths = OnnxTensor.createTensor(
+                        ortEnv,
+                        longArrayOf(queuePhoneIds.size.toLong()),
+                    )
+
+                    // Should be set to the input length that's supported by the decoder.
+                    val yMaxLengthInBatch = 64
+
+                    val encoder = voiceResources.encoder.get()
+                    val (yLengths, muY, yMask) =
+                        encoder.run(x, xLengths, lengthScale).use { result ->
+                            @Suppress("UNCHECKED_CAST")
+                            Triple(
+                                result[0].value as LongArray,
+                                result[1].value as Array<Array<FloatArray>>,
+                                result[2].value as Array<Array<FloatArray>>,
+                            )
+                        }
+                    val firstYLength = yLengths[0]
+                    val yLengthBatchesSize =
+                        ceil(firstYLength.toFloat() / yMaxLengthInBatch.toFloat()).toInt()
+                    for (splitIndex in 0..<yLengthBatchesSize) {
+                        val startOfRange = splitIndex * yMaxLengthInBatch
+                        val rangeLength = yMaxLengthInBatch
+                        val endOfRange = startOfRange + rangeLength
+                        verboseLog(TAG) {
+                            "onSynthesizeText decoding: startOfRange: $startOfRange, endOfRange: $endOfRange"
+                        }
+                        val muYb = getCachedFloatByteBuffer1(muY[0].size * rangeLength).floatBuffer
+                        for (secondDimObject in muY[0]) {
+                            muYb.put(
+                                secondDimObject,
+                                startOfRange,
+                                min(
+                                    rangeLength,
+                                    secondDimObject.size - startOfRange,
+                                ),
+                            )
+                            repeat(endOfRange - secondDimObject.size) {
+                                muYb.put(0f)
+                            }
+                        }
+                        muYb.flip()
+
+                        val yMaskBuf = getCachedFloatByteBuffer2(
+                            yMask[0].size * rangeLength,
+                        ).floatBuffer
+
+                        for (secondDimObject in yMask[0]) {
+                            val copyLength = min(rangeLength, secondDimObject.size - startOfRange)
+                            yMaskBuf.put(secondDimObject, startOfRange, copyLength)
+                            repeat(rangeLength - copyLength) {
+                                yMaskBuf.put(1f)
+                            }
+                        }
+                        yMaskBuf.flip()
+                        var muYTensor: OnnxTensor? = null
+                        var yMaskTensor: OnnxTensor? = null
+                        var nTimestepsTensor: OnnxTensor? = null
+                        val pcmFloats = try {
+                            muYTensor = OnnxTensor.createTensor(
+                                ortEnv,
+                                muYb,
+                                longArrayOf(1, muY[0].size.toLong(), rangeLength.toLong()),
+                            )
+                            yMaskTensor = OnnxTensor.createTensor(
+                                ortEnv,
+                                yMaskBuf,
+                                longArrayOf(1, yMask[0].size.toLong(), rangeLength.toLong()),
+                            )
+                            nTimestepsTensor = OnnxTensor.createTensor(
+                                ortEnv,
+                                LongBuffer.wrap(longArrayOf(5)),
+                                longArrayOf(1),
+                            )
+                            voiceResources.decoder.get().run(
+                                muYTensor,
+                                yMaskTensor,
+                                nTimestepsTensor,
+                            ).use { result ->
+                                @Suppress("UNCHECKED_CAST")
+                                (result[0].value as Array<FloatArray>)[0]
+                            }
+                        } finally {
+                            closeAll(nTimestepsTensor, yMaskTensor, muYTensor)
+                        }
+                        val unpaddedSize =
+                            (min(endOfRange, firstYLength.toInt()) - startOfRange) * 256
+
+                        val input = getCachedFloatByteBuffer1(unpaddedSize)
+                        input.floatBuffer.put(pcmFloats, 0, unpaddedSize)
+                        input.byteBuffer.limit(unpaddedSize * Float.SIZE_BYTES)
+
+                        val result: ByteBuffer
+                        if (!sonicAudioProcessor.isActive) {
+                            // no processing is needed
+                            result = input.byteBuffer
+                        } else {
+                            sonicAudioProcessor.flush(AudioProcessor.StreamMetadata.DEFAULT)
+                            sonicAudioProcessor.queueInput(input.byteBuffer)
+                            sonicAudioProcessor.queueEndOfStream()
+                            result = sonicAudioProcessor.getOutput()
+                        }
+
+                        val resultFloat = result.asFloatBuffer()
+
+                        val floatBufferSize = maxCallbackBufSize / 2
+                        for (i in 0 until resultFloat.limit() step floatBufferSize) {
+                            cancellationCheck()
+
+                            val chunkLength = min(floatBufferSize, resultFloat.limit() - i)
+
+                            // convert audio to PCM_S16LE since PCM_FLOAT is not supported by
+                            // SynthesisCallback.audioAvailable() as of SDK 36.1
+                            for (chunkIdx in 0 until chunkLength) {
+                                val sample = (
+                                    resultFloat.get(i + chunkIdx)
+                                        .coerceIn(-1f, 1f) * 32767.0f
+                                    ).toInt()
+                                val off = chunkIdx shl 1
+                                callbackBuffer[off] = (sample and 0xFF).toByte()
+                                callbackBuffer[off + 1] = ((sample ushr 8) and 0xFF).toByte()
+                            }
+
+                            if (timeToFirstAudio == -1L) {
+                                timeToFirstAudio =
+                                    SystemClock.elapsedRealtime() - startTime
+                                Log.d(TAG, "time-to-first-audio: $timeToFirstAudio")
+                            }
+
+                            val result = callback.audioAvailable(
+                                callbackBuffer,
+                                0,
+                                chunkLength shl 1,
+                            )
+
+                            if (result != TextToSpeech.SUCCESS) {
+                                if (currentSynthesisRequest === request) {
+                                    Log.d(TAG, "audioAvailable returned ${statusToString(result)}")
+                                } else {
+                                    verboseLog(TAG) {
+                                        "audioAvailable returned ${statusToString(result)}"
+                                    }
+                                }
+                                if (result != TextToSpeech.STOPPED) {
+                                    callback.error(TextToSpeech.ERROR_OUTPUT)
+                                }
+                                return
+                            }
+                        }
+                        check(!sonicAudioProcessor.output.hasRemaining())
+                    }
+                } finally {
+                    closeAll(xLengths, x)
+                }
+            }
+        } finally {
+            closeAll(lengthScale)
         }
     }
 
@@ -429,6 +463,9 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
         Log.d(TAG, "onDestroy")
         super.onDestroy()
         currentSynthesisRequest = null
+        cachedFloatByteBuffer1 = null
+        cachedFloatByteBuffer2 = null
+        cachedAudioCallbackByteBuf = null
         voiceResourcesInitLock.withLock {
             voiceResources?.let {
                 voiceInitExecutor.submit<Unit> {

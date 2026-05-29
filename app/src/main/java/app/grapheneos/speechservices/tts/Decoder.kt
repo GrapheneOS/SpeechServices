@@ -6,24 +6,48 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.res.AssetFileDescriptor
 import app.grapheneos.speechservices.allocateDirectFloatBuffer
+import app.grapheneos.speechservices.closeAll
 import app.grapheneos.speechservices.createOrtSession
+import app.grapheneos.speechservices.OrtSessionOwner
 
 /**
  * Converts encoder output into audio.
  *
  * @see Encoder
  */
+@Suppress("TooGenericExceptionCaught")
 class Decoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = createOrtSession(env, modelFileDescriptor)
-    private val temperature: OnnxTensor = createTensor(
-        env,
-        allocateDirectFloatBuffer(1).apply {
-            put(0.667f)
-            flip()
-        },
-        longArrayOf(1),
-    )
+    private val sessionOwner: OrtSessionOwner
+    private val temperature: OnnxTensor
+
+    init {
+        var sessionOwnerRef: OrtSessionOwner? = null
+        var temperatureRef: OnnxTensor? = null
+        try {
+            sessionOwnerRef = OrtSessionOwner(
+                optionsSupplier = { OrtSession.SessionOptions() },
+                sessionSupplier = { options -> createOrtSession(env, modelFileDescriptor, options) },
+            )
+            temperatureRef = createTensor(
+                env,
+                allocateDirectFloatBuffer(1).apply {
+                    put(0.667f)
+                    flip()
+                },
+                longArrayOf(1),
+            )
+            this.sessionOwner = sessionOwnerRef
+            this.temperature = temperatureRef
+        } catch (exception: Throwable) {
+            try {
+                closeAll(temperatureRef, sessionOwnerRef)
+            } catch (closeException: Throwable) {
+                exception.addSuppressed(closeException)
+            }
+            throw exception
+        }
+    }
 
     /**
      * @param muY Actual encoder output. See [Encoder.run].
@@ -56,11 +80,10 @@ class Decoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
             inputs["spks"] = spks
         }
 
-        return session.run(inputs)
+        return sessionOwner.session.run(inputs)
     }
 
     override fun close() {
-        temperature.close()
-        session.close()
+        closeAll(temperature, sessionOwner)
     }
 }

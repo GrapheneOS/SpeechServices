@@ -5,6 +5,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.res.AssetFileDescriptor
 import app.grapheneos.speechservices.createOrtSession
+import app.grapheneos.speechservices.OrtSessionOwner
 
 /**
  * Converts input IDs into encoder output, to be decoded into audio by the [Decoder].
@@ -15,7 +16,10 @@ import app.grapheneos.speechservices.createOrtSession
  */
 class Encoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = createOrtSession(env, modelFileDescriptor)
+    private val sessionOwner = OrtSessionOwner(
+        optionsSupplier = { OrtSession.SessionOptions() },
+        sessionSupplier = { options -> createOrtSession(env, modelFileDescriptor, options) },
+    )
 
     /**
      * @param x [Array] (length = batch size) of [LongArray] where each item in the first dimension
@@ -59,10 +63,10 @@ class Encoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
             inputs["spks"] = spks
         }
 
-        return session.run(inputs)
+        return sessionOwner.session.run(inputs)
     }
 
     override fun close() {
-        session.close()
+        sessionOwner.close()
     }
 }
