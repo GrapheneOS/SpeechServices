@@ -1068,6 +1068,8 @@ class EnglishPhonemizer(
         data class StringValue(val value: String) : FeatureValue()
     }
 
+    private val whitespaceRegex = Regex("""\s+""")
+
     fun preprocess(text: String): Triple<String, List<String>, Map<Int, FeatureValue>> {
         val result = StringBuilder()
         val tokens = mutableListOf<String>()
@@ -1076,31 +1078,9 @@ class EnglishPhonemizer(
         val text = text.trimStart()
         for (m in LINK_REGEX.findAll(text)) {
             result.append(text, lastEnd, m.range.first)
-            tokens.addAll(text.substring(lastEnd, m.range.first).trim().split(Regex("""\s+""")))
+            tokens.addNonEmptyWords(text.substring(lastEnd, m.range.first))
             val thirdGroupValue = m.groupValues[2]
-            var feature: FeatureValue? = null
-            val intValue = thirdGroupValue.toIntOrNull()
-            if (intValue != null) {
-                feature = FeatureValue.IntValue(intValue)
-            } else if (thirdGroupValue == "0.5" || thirdGroupValue == "+0.5") {
-                feature = FeatureValue.DoubleValue(0.5)
-            } else if (thirdGroupValue == "-0.5") {
-                feature = FeatureValue.DoubleValue(-0.5)
-            } else if (thirdGroupValue.length > 1 &&
-                thirdGroupValue[0] == '/' &&
-                thirdGroupValue.last() == '/'
-            ) {
-                feature = FeatureValue.StringValue(
-                    thirdGroupValue[0] + thirdGroupValue.drop(1).trimEnd('/'),
-                )
-            } else if (thirdGroupValue.length > 1 &&
-                thirdGroupValue[0] == '#' &&
-                thirdGroupValue.last() == '#'
-            ) {
-                feature = FeatureValue.StringValue(
-                    thirdGroupValue[0] + thirdGroupValue.drop(1).trimEnd('#'),
-                )
-            }
+            val feature = parseFeatureValue(thirdGroupValue)
             if (feature != null) {
                 features[tokens.size] = feature
             }
@@ -1110,9 +1090,29 @@ class EnglishPhonemizer(
         }
         if (lastEnd < text.length) {
             result.append(text, lastEnd, text.length)
-            tokens.addAll(text.drop(lastEnd).trim().split(Regex("""\s+""")))
+            tokens.addNonEmptyWords(text.drop(lastEnd))
         }
         return Triple(result.toString(), tokens, features)
+    }
+
+    private fun MutableList<String>.addNonEmptyWords(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isNotEmpty()) {
+            addAll(trimmed.split(whitespaceRegex))
+        }
+    }
+
+    private fun parseFeatureValue(value: String): FeatureValue? {
+        value.toIntOrNull()?.let { return FeatureValue.IntValue(it) }
+        return when {
+            value == "0.5" || value == "+0.5" -> FeatureValue.DoubleValue(0.5)
+            value == "-0.5" -> FeatureValue.DoubleValue(-0.5)
+            value.length > 1 && value.first() == '/' && value.last() == '/' ->
+                FeatureValue.StringValue(value.first() + value.drop(1).trimEnd('/'))
+            value.length > 1 && value.first() == '#' && value.last() == '#' ->
+                FeatureValue.StringValue(value.first() + value.drop(1).trimEnd('#'))
+            else -> null
+        }
     }
 
     @Suppress("UnusedParameter")
