@@ -16,7 +16,6 @@ import app.grapheneos.speechservices.verboseLog
 import java.text.Normalizer
 import java.util.BitSet
 import java.util.Locale
-import kotlin.math.absoluteValue
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -747,6 +746,8 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         return Pair(null, null)
     }
 
+    private data class CurrencyPart(val digits: String, val value: Long?, val unit: String)
+
     fun isCurrency(word: String): Boolean {
         if ('.' !in word) {
             return true
@@ -861,35 +862,33 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 first = false
             }
         } else if (currency in CURRENCIES && this.isCurrency(word)) {
-            var pairs =
+            var parts =
                 word.replace(",", "").split('.').zip(CURRENCIES[currency]!!).map { (num, unit) ->
-                    Pair(
-                        if (num.isNotEmpty()) {
-                            num.toLongOrNull() ?: 0L
-                        } else {
-                            0L
-                        },
-                        unit,
-                    )
+                    CurrencyPart(num, if (num.isEmpty()) 0L else num.toLongOrNull(), unit)
                 }
-            if (pairs.size > 1) {
-                if (pairs[1].first == 0L) {
-                    pairs = pairs.take(1)
-                } else if (pairs[0].first == 0L) {
-                    pairs = pairs.drop(1)
+            if (parts.size > 1) {
+                if (parts[1].value == 0L) {
+                    parts = parts.take(1)
+                } else if (parts[0].value == 0L) {
+                    parts = parts.drop(1)
                 }
             }
-            pairs.forEachIndexed { index, pair ->
-                val (num, unit) = pair
+            parts.forEachIndexed { index, part ->
                 if (index > 0) {
                     result.add(this.lookup("and", null, null, null))
                 }
-                extendNum(num.toString(), first = index == 0)
+                val numString = part.digits.ifEmpty { "0" }
+                val spelled = numToWords(numString, locale = Locale.ENGLISH)
+                if (part.value != null && spelled.any { it.isLetter() }) {
+                    extendNum(spelled, first = index == 0, escape = true)
+                } else {
+                    numString.forEach { digit -> extendNum(digit.toString(), first = false) }
+                }
                 result.add(
-                    if (num.absoluteValue != 1L && unit != "pence") {
-                        this.stemS(unit + "s", null, null, null)
+                    if (part.value != 1L && part.unit != "pence") {
+                        this.stemS(part.unit + "s", null, null, null)
                     } else {
-                        this.lookup(unit, null, null, null)
+                        this.lookup(part.unit, null, null, null)
                     },
                 )
             }
