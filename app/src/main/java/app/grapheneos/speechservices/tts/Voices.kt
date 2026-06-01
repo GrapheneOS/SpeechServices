@@ -24,15 +24,17 @@ val supportedVoices = DefaultVoice.entries.map { it.voice }
 
 val availableVoices = supportedVoices
 
-fun getAvailableVoiceByName(voiceName: String): Voice? {
-    return availableVoices.find { availableVoice -> availableVoice.name == voiceName }
+fun getAvailableVoiceByName(voiceName: String?): Voice? {
+    return voiceName?.let {
+        availableVoices.find { availableVoice -> availableVoice.name == voiceName }
+    }
 }
 
 fun isVoiceAvailable(voice: Voice?): Boolean {
     return availableVoices.find { availableVoice -> availableVoice == voice } != null
 }
 
-fun isVoiceAvailable(voiceName: String): Boolean {
+fun isVoiceAvailable(voiceName: String?): Boolean {
     return getAvailableVoiceByName(voiceName) != null
 }
 
