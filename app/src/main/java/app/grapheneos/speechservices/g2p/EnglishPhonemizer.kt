@@ -16,7 +16,6 @@ import app.grapheneos.speechservices.verboseLog
 import java.text.Normalizer
 import java.util.BitSet
 import java.util.Locale
-import kotlin.math.absoluteValue
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -863,30 +862,29 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         } else if (currency in CURRENCIES && this.isCurrency(word)) {
             var pairs =
                 word.replace(",", "").split('.').zip(CURRENCIES[currency]!!).map { (num, unit) ->
-                    Pair(
-                        if (num.isNotEmpty()) {
-                            num.toLongOrNull() ?: 0L
-                        } else {
-                            0L
-                        },
-                        unit,
-                    )
+                    Triple(num, if (num.isEmpty()) 0L else num.toLongOrNull(), unit)
                 }
             if (pairs.size > 1) {
-                if (pairs[1].first == 0L) {
+                if (pairs[1].second == 0L) {
                     pairs = pairs.take(1)
-                } else if (pairs[0].first == 0L) {
+                } else if (pairs[0].second == 0L) {
                     pairs = pairs.drop(1)
                 }
             }
             pairs.forEachIndexed { index, pair ->
-                val (num, unit) = pair
+                val (num, numValue, unit) = pair
                 if (index > 0) {
                     result.add(this.lookup("and", null, null, null))
                 }
-                extendNum(num.toString(), first = index == 0)
+                val numString = num.ifEmpty { "0" }
+                val spelled = numToWords(numString, locale = Locale.ENGLISH)
+                if (numValue != null && spelled.any { it.isLetter() }) {
+                    extendNum(spelled, first = index == 0, escape = true)
+                } else {
+                    numString.forEach { digit -> extendNum(digit.toString(), first = false) }
+                }
                 result.add(
-                    if (num.absoluteValue != 1L && unit != "pence") {
+                    if (numValue != 1L && unit != "pence") {
                         this.stemS(unit + "s", null, null, null)
                     } else {
                         this.lookup(unit, null, null, null)
