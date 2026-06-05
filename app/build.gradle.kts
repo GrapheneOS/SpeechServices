@@ -56,15 +56,6 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a", "x86_64")
-            isUniversalApk = false
-        }
-    }
-
     buildFeatures {
         compose = true
     }
@@ -78,6 +69,7 @@ android {
     }
 
     packaging {
+        jniLibs.excludes += listOf("lib/armeabi-v7a/**", "lib/x86/**")
         resources.merges.add("META-INF/DEPENDENCIES")
         resources.merges.add("META-INF/INDEX.LIST")
     }
