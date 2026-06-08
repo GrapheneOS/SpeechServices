@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SpeechServices.Settings"
+        parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">@color/settings_accent_color</item>
+        <item name="android:homeAsUpIndicator">@drawable/ic_arrow_back_24</item>
+        <item name="android:colorBackground">@android:color/system_surface_container_dark</item>
+        <item name="android:colorPrimary">@android:color/system_surface_container_dark</item>
+        <item name="android:listPreferredItemHeight">72dp</item>
+        <item name="android:textColorPrimary">@android:color/system_on_surface_dark</item>
+        <item name="android:textColorSecondary">@android:color/system_on_surface_variant_dark</item>
+    </style>
+</resources>
