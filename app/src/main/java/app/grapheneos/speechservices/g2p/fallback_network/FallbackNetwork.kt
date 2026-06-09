@@ -56,7 +56,7 @@ class FallbackNetwork(
         val inputs = HashMap<String, OnnxTensor>()
         inputs["input_ids"] = inputIds
 
-        return session.inner.run(inputs)
+        return session.run(inputs)
     }
 
     override fun close() {

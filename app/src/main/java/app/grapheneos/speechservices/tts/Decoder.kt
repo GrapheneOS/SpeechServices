@@ -134,7 +134,7 @@ class Decoder(modelFileDescriptor: AssetFileDescriptor) : AutoCloseable {
                 inputs["spks"] = spks
             }
 
-            return session.inner.run(inputs)
+            return session.run(inputs)
         }
     }
 

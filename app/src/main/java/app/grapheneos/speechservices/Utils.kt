@@ -1,5 +1,6 @@
 package app.grapheneos.speechservices
 
+import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtException
 import ai.onnxruntime.OrtSession
@@ -10,6 +11,7 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.channels.FileChannel
 import java.util.BitSet
+import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.system.measureTimeMillis
 
 inline fun verboseLog(tag: String, msg: () -> String) {
@@ -57,16 +59,49 @@ fun allocateDirectFloatBuffer(capacity: Int): FloatBuffer {
 
 class OrtSessionWrapper(
     val env: OrtEnvironment,
-    val inner: OrtSession,
-    val opts: OrtSession.SessionOptions,
+    private val inner: OrtSession,
+    private val opts: OrtSession.SessionOptions,
 ) : AutoCloseable {
-    override fun close() {
+    private val lock = ReentrantReadWriteLock(true)
+    private var closed = false
+
+    fun run(inputs: Map<String, OnnxTensor>): OrtSession.Result {
+        val readLock = lock.readLock()
+        readLock.lock()
         try {
-            inner.close()
-        } catch (e: OrtException) {
-            Log.e("OrtSessionWrapper", "unable to close OrtSession", e)
+            if (closed) {
+                throw OrtException("OrtSession is closed")
+            }
+            return inner.run(inputs)
+        } finally {
+            readLock.unlock()
         }
-        opts.close()
+    }
+
+    override fun close() {
+        val writeLock = lock.writeLock()
+        writeLock.lock()
+        try {
+            if (closed) {
+                return
+            }
+
+            closed = true
+
+            try {
+                inner.close()
+            } catch (e: OrtException) {
+                Log.e(TAG, "unable to close OrtSession", e)
+            } finally {
+                opts.close()
+            }
+        } finally {
+            writeLock.unlock()
+        }
+    }
+
+    private companion object {
+        private const val TAG = "OrtSessionWrapper"
     }
 }
 
