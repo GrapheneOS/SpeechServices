@@ -53,6 +53,7 @@ android {
         targetSdk = 36
         versionCode = 2
         versionName = versionCode.toString()
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     splits {
@@ -123,4 +124,7 @@ dependencies {
     implementation(libs.slf4j.nop)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.test.ext.junit)
+    androidTestImplementation(libs.test.runner)
 }
