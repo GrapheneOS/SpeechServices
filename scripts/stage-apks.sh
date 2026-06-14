@@ -183,11 +183,25 @@ validate_apk_set
     "splits/${X86_64_SPLIT_APK}" \
     -d "${tmp_dir}"
 
+for split in ${BASE_APK} ${ARM64_SPLIT_APK} ${X86_64_SPLIT_APK}; do
+    exec {store_password_fd}< <(printf '%s\n' "${store_password}")
+    exec {key_password_fd}< <(printf '%s\n' "${key_password}")
+    apksigner sign --v4-signing-enabled true \
+        --ks="${store_file}" \
+        --ks-pass="file:/proc/self/fd/${store_password_fd}" \
+        --ks-key-alias="${key_alias}" \
+        --key-pass="file:/proc/self/fd/${key_password_fd}" \
+        "${tmp_dir}/splits/${split}"
+done
+
 prepare_appstore_output_dir
 
 stage_apk "${tmp_dir}/splits/${BASE_APK}" "base-master.apk"
+stage_apk "${tmp_dir}/splits/${BASE_APK}" "base-master.apk.idsig"
 stage_apk "${tmp_dir}/splits/${ARM64_SPLIT_APK}" "base.config.arm64_v8a.apk"
+stage_apk "${tmp_dir}/splits/${ARM64_SPLIT_APK}" "base.config.arm64_v8a.apk.idsig"
 stage_apk "${tmp_dir}/splits/${X86_64_SPLIT_APK}" "base.config.x86_64.apk"
+stage_apk "${tmp_dir}/splits/${X86_64_SPLIT_APK}" "base.config.x86_64.apk.idsig"
 
 printf 'Built AOSP APK set: %s\n' "${APK_SET_OUTPUT}"
 printf 'Built AppStore APKs: %s\n' "${APPSTORE_APK_DIR}"
