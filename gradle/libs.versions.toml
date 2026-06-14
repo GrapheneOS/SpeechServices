@@ -2,7 +2,7 @@
 activityCompose = "1.13.0"
 agp = "9.2.1"
 composeBom = "2026.05.01"
-coreKtx = "1.18.0"
+coreKtx = "1.19.0"
 detekt = "2.0.0-alpha.4"
 icu4j = "78.3"
 kotlin = "2.4.0"
