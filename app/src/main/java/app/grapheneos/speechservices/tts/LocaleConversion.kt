@@ -21,6 +21,7 @@
 package app.grapheneos.speechservices.tts
 
 import android.speech.tts.TextToSpeech
+import java.util.IllformedLocaleException
 import java.util.Locale
 import java.util.MissingResourceException
 
@@ -59,24 +60,25 @@ private val deprecatedToModernCountry by lazy {
  */
 fun deprecatedLocaleToModern(lang: String, country: String?, variant: String?): Locale {
     val localeBuilder = Locale.Builder()
+    // The TTS framework normally supplies well-formed ISO codes, but exported entry points
+    // (e.g. GetSampleTextActivity) pass through unvalidated, caller-controlled extras. Guard
+    // each setter so ill-formed input yields a non-matching locale instead of crashing.
     if (!lang.isEmpty()) {
         val normalizedLanguage = deprecatedToModernLanguage[lang]
-        if (normalizedLanguage != null) {
-            localeBuilder.setLanguage(normalizedLanguage)
-        } else {
-            localeBuilder.setLanguage(lang)
-        }
+        try {
+            localeBuilder.setLanguage(normalizedLanguage ?: lang)
+        } catch (_: IllformedLocaleException) {}
     }
     if (!country.isNullOrEmpty()) {
         val normalizedCountry = deprecatedToModernCountry[country]
-        if (normalizedCountry != null) {
-            localeBuilder.setRegion(normalizedCountry)
-        } else {
-            localeBuilder.setRegion(country)
-        }
+        try {
+            localeBuilder.setRegion(normalizedCountry ?: country)
+        } catch (_: IllformedLocaleException) {}
     }
     if (!variant.isNullOrEmpty()) {
-        localeBuilder.setVariant(variant)
+        try {
+            localeBuilder.setVariant(variant)
+        } catch (_: IllformedLocaleException) {}
     }
     return localeBuilder.build()
 }
