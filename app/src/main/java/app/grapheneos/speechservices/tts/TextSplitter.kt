@@ -1,7 +1,7 @@
 package app.grapheneos.speechservices.tts
 
 class TextSplitter(text: CharSequence) : Iterator<String> {
-    private val text = text.toString()
+    private val text = normalizeZeroWidthSpaces(text.toString())
     private var chunkStart: Int = 0
     private var index: Int = 0
 
@@ -104,4 +104,13 @@ class TextSplitter(text: CharSequence) : Iterator<String> {
 
         return false
     }
+}
+
+// Some apps prefix announcements with U+200B ZERO WIDTH SPACE (to wake up the
+// Google TTS engine), expecting TTS engines to stay silent on it, but the
+// phonemizer fallback would read out its Unicode name. Elsewhere in the text
+// it marks a word boundary, so it becomes a regular space there.
+fun normalizeZeroWidthSpaces(text: String): String {
+    val normalized = text.trimStart('\u200B').replace('\u200B', ' ')
+    return if (normalized.isBlank()) "" else normalized
 }
