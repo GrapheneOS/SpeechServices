@@ -820,6 +820,21 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 }
             }
         }
+        fun extendCardinal(num: String, value: Long? = num.toLongOrNull(), first: Boolean = true) {
+            // Avoid numToWords' floating-point fallback for values outside the Long range.
+            val spelled = if (value != null) {
+                numToWords(num, locale = Locale.ENGLISH)
+            } else {
+                ""
+            }
+            if (spelled.any { it.isLetter() }) {
+                extendNum(spelled, first = first, escape = true)
+            } else {
+                num.forEach { digit ->
+                    result.add(this.lookup(DIGIT_WORDS[digit.digitToInt()], null, null, null))
+                }
+            }
+        }
         if (isAsciiNumber(word) && suffix in ORDINALS) {
             extendNum(numToWords(word, NumToWordsRuleSet.Ordinal, Locale.ENGLISH), escape = true)
         } else if (result.isEmpty() &&
@@ -882,19 +897,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 if (index > 0) {
                     result.add(this.lookup("and", null, null, null))
                 }
-                val numString = part.digits.ifEmpty { "0" }
-                val spelled = if (part.value != null) {
-                    numToWords(numString, locale = Locale.ENGLISH)
-                } else {
-                    ""
-                }
-                if (spelled.any { it.isLetter() }) {
-                    extendNum(spelled, first = index == 0, escape = true)
-                } else {
-                    numString.forEach { digit ->
-                        result.add(this.lookup(DIGIT_WORDS[digit.digitToInt()], null, null, null))
-                    }
-                }
+                extendCardinal(part.digits.ifEmpty { "0" }, part.value, first = index == 0)
                 result.add(
                     if (part.value != 1L && part.unit != "pence") {
                         this.stemS(part.unit + "s", null, null, null)
@@ -903,17 +906,13 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                     },
                 )
             }
+        } else if ('.' !in word && suffix !in ORDINALS) {
+            extendCardinal(word.replace(",", ""))
         } else {
-            if (isAsciiNumber(word)) {
-                word = numToWords(word, locale = Locale.ENGLISH)
-            } else if ('.' !in word) {
+            if ('.' !in word) {
                 word = numToWords(
                     word.replace(",", ""),
-                    if (suffix in ORDINALS) {
-                        NumToWordsRuleSet.Ordinal
-                    } else {
-                        NumToWordsRuleSet.Cardinal
-                    },
+                    NumToWordsRuleSet.Ordinal,
                     Locale.ENGLISH,
                 )
             } else {
