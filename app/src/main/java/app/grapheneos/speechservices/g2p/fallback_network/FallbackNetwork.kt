@@ -6,6 +6,7 @@ import android.content.res.AssetFileDescriptor
 import app.grapheneos.speechservices.OrtSessionWrapper
 import app.grapheneos.speechservices.createOrtSession
 import app.grapheneos.speechservices.g2p.MToken
+import app.grapheneos.speechservices.tts.CancellationCheck
 
 /**
  * Converts graphemes to phonemes.
@@ -19,12 +20,13 @@ class FallbackNetwork(
     /**
      * Convert the token text to input IDs and run them through the model to get phonemes.
      */
-    fun main(token: MToken): Pair<String, Int> {
+    fun main(token: MToken, cancellationCheck: CancellationCheck): Pair<String, Int> {
         // The model that's currently used struggles with too many characters at once. Chunking
         //  makes it at least try to pronounce longer words, even if it sometimes doesn't do well
         //  due to losing context and bad chunk timing.
         // TODO: A model trained with RoPE should not have these issues.
         val outputText = token.text.chunked(11).joinToString("") { chunk ->
+            cancellationCheck()
             val outputIds: LongArray
             OnnxTensor.createTensor(
                 session.env,

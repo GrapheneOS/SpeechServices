@@ -1,5 +1,6 @@
 package app.grapheneos.speechservices
 
+import android.speech.tts.TextToSpeech
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.grapheneos.speechservices.g2p.DictionaryValue
@@ -7,6 +8,9 @@ import app.grapheneos.speechservices.g2p.EnglishPhonemizer
 import app.grapheneos.speechservices.g2p.EnglishPhonemizer.FeatureValue
 import app.grapheneos.speechservices.g2p.Lexicon
 import app.grapheneos.speechservices.g2p.TokenContext
+import app.grapheneos.speechservices.tts.CancelledRequestException
+import app.grapheneos.speechservices.tts.PhonemeSplitter
+import app.grapheneos.speechservices.tts.TextSplitter
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
@@ -15,12 +19,136 @@ import opennlp.tools.postag.POSTaggerME
 import opennlp.tools.tokenize.TokenizerME
 import opennlp.tools.tokenize.TokenizerModel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class PhonemizerInputTest {
+    @Test
+    fun compoundFallbackPreservesNormalizedNumbers() {
+        val digitCount = TextToSpeech.getMaxSpeechInputLength() - 4
+        val numbers = mapOf(
+            "１２３４５" to "12345",
+            "１２３４５．６７" to "12345.67",
+            "１２３４５.６７" to "12345.67",
+            "１２３４５st" to "12345st",
+            "９".repeat(144) to "9".repeat(144),
+            "９".repeat(digitCount) + "．０５" to "9".repeat(digitCount) + ".05",
+        )
+        for (prefix in listOf("＄", "₹", "☃")) {
+            for ((unicode, ascii) in numbers) {
+                assertEquals(
+                    "$prefix with ${unicode.length} numeric characters",
+                    phonemizer.main(prefix + ascii, {}).first,
+                    phonemizer.main(prefix + unicode, {}).first,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun compoundFallbackStillPronouncesSeparators() {
+        val cases = mapOf(
+            "qz/1999" to "slash",
+            "qz/１９９９" to "slash",
+            "xyz_1999" to "underscore",
+            "xyz_１９９９" to "underscore",
+        )
+        for ((input, separator) in cases) {
+            val phonemes = requireNotNull(lexicon.lookup(separator, null, -0.5, null).first)
+            assertTrue(input, phonemes in phonemizer.main(input, {}).first)
+        }
+    }
+
+    @Test
+    fun synthesisChunksPreserveNumberPronunciations() {
+        val numbers = listOf(
+            "$9223372036854775808.01",
+            "$" + "9".repeat(144),
+            "-1234567.8901",
+            "0." + "0".repeat(150) + "1",
+            "1,000,000,000,000,000,001st",
+            "9".repeat(144) + "th",
+            "9".repeat(144) + "ｓｔ",
+            "9".repeat(144) + "sⓣ",
+            "9".repeat(144) + "ⓢⓣ",
+            "9".repeat(144) + "ｓⓣ",
+            "$" + "９".repeat(144) + "．０５",
+            "𝟡".repeat(144) + "𝕥𝕙",
+        )
+        for (number in numbers) {
+            for (prefixCount in listOf(0, 65, 70, 71, 72, 74, 75, 80)) {
+                val text = "hello ".repeat(prefixCount) + number + " after."
+                val expected = phonemizer.main(text, {}).first.trim()
+                val chunks = TextSplitter(text).asSequence().flatMap { chunk ->
+                    PhonemeSplitter(phonemizer.main(chunk, {}).first).asSequence()
+                }.toList()
+                assertEquals(
+                    "$number after $prefixCount words",
+                    expected,
+                    chunks.joinToString("").trim(),
+                )
+                assertTrue(chunks.all { it.isNotEmpty() && it.length <= 500 })
+            }
+        }
+    }
+
+    @Test
+    fun maximumLengthNumberHasBoundedPhonemeChunks() {
+        val length = TextToSpeech.getMaxSpeechInputLength()
+        val number = "9".repeat(length)
+        val nine = requireNotNull(lexicon.getWord("nine", "NUM", null, TokenContext()).first)
+        val expected = List(length) { nine }.joinToString(" ")
+        val chunks = TextSplitter(number).asSequence().flatMap { chunk ->
+            PhonemeSplitter(phonemizer.main(chunk, {}).first).asSequence()
+        }.toList()
+        assertEquals(expected, chunks.joinToString(""))
+        assertTrue(chunks.size > 1)
+        assertTrue(chunks.all { it.isNotEmpty() && it.length <= 500 })
+    }
+
+    @Test
+    fun longDottedNumbersKeepEveryComponent() {
+        val number = "1.11.100.01.27.3000"
+        val expected = "one eleven one hundred zero one twenty seven three thousand"
+        assertNumber(
+            List(100) { number }.joinToString("."),
+            List(100) { expected }.joinToString(" "),
+        )
+    }
+
+    @Test
+    fun longNumberConversionCanBeCancelled() {
+        for (number in listOf("9".repeat(4000), "0." + "1".repeat(3998), "11.".repeat(1000))) {
+            var checks = 0
+            assertThrows(CancelledRequestException::class.java) {
+                lexicon.getNumber(number, null, true, "") {
+                    checks++
+                    if (checks == 50) {
+                        throw CancelledRequestException()
+                    }
+                }
+            }
+            assertEquals(50, checks)
+        }
+    }
+
+    @Test
+    fun fullPhonemizerCancelsDuringLongNumberConversion() {
+        var checks = 0
+        assertThrows(CancelledRequestException::class.java) {
+            phonemizer.main("9".repeat(4000), {
+                checks++
+                if (checks == 50) {
+                    throw CancelledRequestException()
+                }
+            })
+        }
+        assertEquals(50, checks)
+    }
+
     @Test
     fun ordinaryCardinalNumbersKeepTheirMeaning() {
         val cases = mapOf(
