@@ -832,7 +832,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
             val hasPoint = integer.isEmpty() || fraction.isNotEmpty()
             // Avoid floating-point conversion of decimals and overflowing integers.
             val spelled = if (value != null) {
-                numToWords(integer, locale = Locale.ENGLISH)
+                numToWords(value, locale = Locale.ENGLISH)
             } else {
                 ""
             }
@@ -846,15 +846,32 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
             }
             extendDigits(fraction)
         }
-        if (isAsciiNumber(word) && suffix in ORDINALS) {
-            extendWords(numToWords(word, NumToWordsRuleSet.Ordinal, Locale.ENGLISH))
+        fun extendOrdinal(num: String, ordinalSuffix: String) {
+            val value = num.toLongOrNull()
+            val spelled = if (value != null) {
+                numToWords(value, NumToWordsRuleSet.Ordinal, Locale.ENGLISH)
+            } else {
+                ""
+            }
+            // ICU can return numeric text with an ordinal suffix instead of words.
+            if (spelled.any { it.isLetter() } && spelled.none { it.isDigit() }) {
+                extendWords(spelled)
+            } else {
+                extendDigits(num)
+                ordinalSuffix.forEach { letter ->
+                    result.add(this.lookup(letter.uppercaseChar().toString(), null, null, null))
+                }
+            }
+        }
+        if (suffix != null && suffix in ORDINALS && '.' !in word) {
+            extendOrdinal(word.replace(",", ""), suffix)
         } else if (result.isEmpty() &&
             word.length == 4 &&
             currency !in CURRENCIES &&
             isAsciiNumber(word)
         ) {
             extendWords(
-                numToWords(word, NumToWordsRuleSet.NumberingYear, Locale.ENGLISH),
+                numToWords(word.toLong(), NumToWordsRuleSet.NumberingYear, Locale.ENGLISH),
             )
         } else if ((isHead == null || !isHead) && '.' !in word) {
             val num = word.replace(",", "")
@@ -916,14 +933,6 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                     },
                 )
             }
-        } else if ('.' !in word && suffix in ORDINALS) {
-            extendWords(
-                numToWords(
-                    word.replace(",", ""),
-                    NumToWordsRuleSet.Ordinal,
-                    Locale.ENGLISH,
-                ),
-            )
         } else {
             extendCardinal(word.replace(",", ""))
         }

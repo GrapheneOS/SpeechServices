@@ -197,6 +197,100 @@ class PhonemizerInputTest {
     }
 
     @Test
+    fun ordinaryOrdinalsKeepTheirMeaning() {
+        val cases = mapOf(
+            "0th" to "zeroth",
+            "1st" to "first",
+            "2nd" to "second",
+            "3rd" to "third",
+            "4th" to "fourth",
+            "11th" to "eleventh",
+            "12th" to "twelfth",
+            "13th" to "thirteenth",
+            "21st" to "twenty first",
+            "100th" to "one hundredth",
+            "1,001st" to "one thousand first",
+            "00001st" to "first",
+            "999999999999999999th" to
+                "nine hundred ninety nine quadrillion nine hundred ninety nine trillion " +
+                "nine hundred ninety nine billion nine hundred ninety nine million " +
+                "nine hundred ninety nine thousand nine hundred ninety ninth",
+        )
+        for ((number, words) in cases) {
+            assertNumber(number, words)
+        }
+    }
+
+    @Test
+    fun largeOrdinalsKeepDigitsAndSuffix() {
+        val cases = mapOf(
+            "1000000000000000000" to "th",
+            "1000000000000000001" to "st",
+            "1000000000000000002" to "nd",
+            "1000000000000000003" to "rd",
+            "1000000000000000011" to "th",
+            "1000000000000000012" to "th",
+            "1000000000000000013" to "th",
+            "9223372036854775807" to "th",
+            "9223372036854775808" to "th",
+            "9".repeat(125) to "th",
+            "9".repeat(400) to "th",
+        )
+        for ((number, suffix) in cases) {
+            val digits = number.map { DIGITS[it.digitToInt()] }.joinToString(" ")
+            val letters = suffix.map { it.uppercaseChar() }.joinToString(" ")
+            val words = "$digits $letters"
+            assertNumber(number + suffix, words)
+            assertNumber("-$number$suffix", "minus $words")
+            assertNumber("00$number$suffix", "zero zero $words")
+            assertNumber(number + suffix, words, isHead = false)
+            assertNumber(
+                number.reversed().chunked(3).joinToString(",").reversed() + suffix,
+                words,
+            )
+        }
+    }
+
+    @Test
+    fun groupedOrdinalsKeepTheSameMeaning() {
+        for (number in listOf("1001", "1000000000000000001")) {
+            val grouped = number.reversed().chunked(3).joinToString(",").reversed()
+            for (head in listOf(true, false, null)) {
+                for (currency in listOf(null, "$", "£", "€")) {
+                    assertEquals(
+                        "$grouped, head=$head, currency=$currency",
+                        lexicon.getNumber(number + "st", currency, head, ""),
+                        lexicon.getNumber(grouped + "st", currency, head, ""),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun fullPhonemizerPreservesLargeOrdinalDigitsAndSuffix() {
+        val ordinals = mapOf("1000000000000000001" to "st", "9223372036854775808" to "th")
+        for ((number, suffix) in ordinals) {
+            val digits = number.map { DIGITS[it.digitToInt()] }.joinToString(" ")
+            val letters = suffix.map { it.uppercaseChar() }.joinToString(" ")
+            val words = "$digits $letters"
+            val cases = mapOf(
+                number + suffix to words,
+                "-$number$suffix" to "minus $words",
+                number.reversed().chunked(3).joinToString(",").reversed() + suffix to words,
+                "This is the $number$suffix entry." to "This is the $words entry.",
+            )
+            for ((input, expected) in cases) {
+                assertEquals(
+                    input,
+                    phonemizer.main(expected, {}).first,
+                    phonemizer.main(input, {}).first,
+                )
+            }
+        }
+    }
+
+    @Test
     fun ordinaryCurrencyAmountsKeepTheirMeaning() {
         val cases = mapOf(
             "0" to "zero dollars",
