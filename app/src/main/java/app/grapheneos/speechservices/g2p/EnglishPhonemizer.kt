@@ -781,14 +781,8 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
             result.add(this.lookup("minus", null, null, null))
             word = word.drop(1)
         }
-        fun extendNum(num: String, first: Boolean = true, escape: Boolean = false) {
-            val splits = Regex("""[^a-z]+""").split(
-                if (escape) {
-                    num
-                } else {
-                    numToWords(num, locale = Locale.ENGLISH)
-                },
-            )
+        fun extendWords(words: String, first: Boolean = true) {
+            val splits = Regex("""[^a-z]+""").split(words)
             splits.forEachIndexed { splitWordIndex, splitWord ->
                 if (splitWord != "and" || numFlags?.contains('&') == true) {
                     if (first &&
@@ -820,46 +814,62 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 }
             }
         }
-        fun extendCardinal(num: String, value: Long? = num.toLongOrNull(), first: Boolean = true) {
-            // Avoid numToWords' floating-point fallback for values outside the Long range.
+        fun extendDigits(digits: String) {
+            digits.forEach { digit ->
+                result.add(this.lookup(DIGIT_WORDS[digit.digitToInt()], null, null, null))
+            }
+        }
+        fun extendCardinal(
+            num: String,
+            value: Long? = num.substringBefore('.').toLongOrNull(),
+            first: Boolean = true,
+        ) {
+            val integer = num.substringBefore('.')
+            val fraction = num.substringAfter('.', "").let {
+                // Leading-dot decimals retain trailing zeros; other decimals omit them.
+                if (integer.isEmpty()) it else it.trimEnd('0')
+            }
+            val hasPoint = integer.isEmpty() || fraction.isNotEmpty()
+            // Avoid floating-point conversion of decimals and overflowing integers.
             val spelled = if (value != null) {
-                numToWords(num, locale = Locale.ENGLISH)
+                numToWords(integer, locale = Locale.ENGLISH)
             } else {
                 ""
             }
             if (spelled.any { it.isLetter() }) {
-                extendNum(spelled, first = first, escape = true)
+                extendWords(if (hasPoint) "$spelled point" else spelled, first = first)
             } else {
-                num.forEach { digit ->
-                    result.add(this.lookup(DIGIT_WORDS[digit.digitToInt()], null, null, null))
+                extendDigits(integer)
+                if (hasPoint) {
+                    extendWords("point")
                 }
             }
+            extendDigits(fraction)
         }
         if (isAsciiNumber(word) && suffix in ORDINALS) {
-            extendNum(numToWords(word, NumToWordsRuleSet.Ordinal, Locale.ENGLISH), escape = true)
+            extendWords(numToWords(word, NumToWordsRuleSet.Ordinal, Locale.ENGLISH))
         } else if (result.isEmpty() &&
             word.length == 4 &&
             currency !in CURRENCIES &&
             isAsciiNumber(word)
         ) {
-            extendNum(
+            extendWords(
                 numToWords(word, NumToWordsRuleSet.NumberingYear, Locale.ENGLISH),
-                escape = true,
             )
         } else if ((isHead == null || !isHead) && '.' !in word) {
             val num = word.replace(",", "")
             if (num[0] == '0' || num.length > 3) {
-                num.forEach { n -> extendNum(n.toString(), first = false) }
+                extendDigits(num)
             } else if (num.length == 3 && !num.endsWith("00")) {
-                extendNum(num[0].toString())
+                extendCardinal(num[0].toString())
                 if (num[1] == '0') {
                     result.add(this.lookup("O", null, -2.0, null))
-                    extendNum(num[2].toString(), first = false)
+                    extendCardinal(num[2].toString(), first = false)
                 } else {
-                    extendNum(num.drop(1), first = false)
+                    extendCardinal(num.drop(1), first = false)
                 }
             } else {
-                extendNum(num)
+                extendCardinal(num)
             }
         } else if (word.count { c -> c == '.' } > 1 || (isHead == null || !isHead)) {
             var first = true
@@ -873,9 +883,9 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                                 .any { n -> n != '0' }
                         )
                 ) {
-                    num.forEach { n -> extendNum(n.toString(), first = false) }
+                    extendDigits(num)
                 } else {
-                    extendNum(num, first = first)
+                    extendCardinal(num, first = first)
                 }
                 first = false
             }
@@ -906,26 +916,16 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                     },
                 )
             }
-        } else if ('.' !in word && suffix !in ORDINALS) {
-            extendCardinal(word.replace(",", ""))
-        } else {
-            if ('.' !in word) {
-                word = numToWords(
+        } else if ('.' !in word && suffix in ORDINALS) {
+            extendWords(
+                numToWords(
                     word.replace(",", ""),
                     NumToWordsRuleSet.Ordinal,
                     Locale.ENGLISH,
-                )
-            } else {
-                word = word.replace(",", "")
-                word = if (word[0] == '.') {
-                    "point " + word.drop(1)
-                        .map { n -> numToWords(n.toString(), locale = Locale.ENGLISH) }
-                        .joinToString(" ")
-                } else {
-                    numToWords(word, locale = Locale.ENGLISH)
-                }
-            }
-            extendNum(word, escape = true)
+                ),
+            )
+        } else {
+            extendCardinal(word.replace(",", ""))
         }
         if (result.isEmpty()) {
             // TODO:

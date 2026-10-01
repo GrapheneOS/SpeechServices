@@ -99,6 +99,104 @@ class PhonemizerInputTest {
     }
 
     @Test
+    fun decimalNumbersKeepEverySignificantDigit() {
+        val fraction = "1234567890123456789"
+        val fractionWords = fraction.map { DIGITS[it.digitToInt()] }.joinToString(" ")
+        assertNumber("1.$fraction", "one point $fractionWords")
+        assertNumber(
+            "9007199254740993.01",
+            "nine quadrillion seven trillion one hundred ninety nine billion " +
+                "two hundred fifty four million seven hundred forty thousand " +
+                "nine hundred ninety three point zero one",
+        )
+        assertNumber(
+            "0." + "0".repeat(324) + "1",
+            "zero point " + "zero ".repeat(324) + "one",
+        )
+        for (whole in listOf("1000000000000000000", "9223372036854775808", "9".repeat(400))) {
+            val words = whole.map { DIGITS[it.digitToInt()] }.joinToString(" ")
+            assertNumber("$whole.$fraction", "$words point $fractionWords")
+            assertNumber("-$whole.01", "minus $words point zero one")
+            assertNumber("$whole.0", words)
+            assertNumber(
+                whole.reversed().chunked(3).joinToString(",").reversed() + ".5",
+                "$words point five",
+            )
+        }
+        val powerOfTen = "1000000000000000000"
+        val digits = "one " + "zero ".repeat(18)
+        assertNumber("$powerOfTen.0", digits + "zero", isHead = false)
+        assertNumber("$powerOfTen.1.2", digits + "one two")
+    }
+
+    @Test
+    fun decimalZerosKeepTheirMeaning() {
+        val cases = mapOf(
+            "1.50" to "one point five",
+            "1.00" to "one",
+            "1." to "one",
+            "0.00" to "zero",
+            "-0.000" to "minus zero",
+            "0001.0500" to "one point zero five",
+            ".050" to "point zero five zero",
+            ".000" to "point zero zero zero",
+        )
+        for ((number, words) in cases) {
+            assertNumber(number, words)
+        }
+    }
+
+    @Test
+    fun decimalPronunciationFlagsKeepTheirMeaning() {
+        val fraction = lexicon.getNumber(".5", null, true, "").first
+        for (whole in listOf("1", "01", "0001")) {
+            assertEquals(
+                "$whole.5",
+                "ə $fraction",
+                lexicon.getNumber("$whole.5", null, true, "a").first,
+            )
+        }
+        assertEquals(
+            lexicon.getNumber("1", null, true, "a"),
+            lexicon.getNumber("1.0", null, true, "a"),
+        )
+    }
+
+    @Test
+    fun fullPhonemizerPreservesDecimalDigits() {
+        val point = requireNotNull(lexicon.getWord("point", "NUM", null, TokenContext()).first)
+        val decimalPoint = requireNotNull(
+            lexicon.getWord("point", "NUM", -2.0, TokenContext()).first,
+        )
+        fun expectedPhonemes(text: String): String {
+            // Decimal points are unstressed, unlike the standalone word "point".
+            return phonemizer.main(text, {}).first.replace(point, decimalPoint)
+        }
+        assertEquals(expectedPhonemes("one point five"), phonemizer.main("1.5", {}).first)
+        for (whole in listOf("1000000000000000000", "9223372036854775808")) {
+            val words = whole.map { DIGITS[it.digitToInt()] }.joinToString(" ")
+            val cases = mapOf(
+                "$whole.01" to "$words point zero one",
+                "-$whole.01" to "minus $words point zero one",
+                "The value is $whole.01." to "The value is $words point zero one.",
+            )
+            for ((input, expected) in cases) {
+                assertEquals(
+                    input,
+                    expectedPhonemes(expected),
+                    phonemizer.main(input, {}).first,
+                )
+            }
+        }
+        val fraction = "1234567890123456789"
+        val words = fraction.map { DIGITS[it.digitToInt()] }.joinToString(" ")
+        assertEquals(
+            expectedPhonemes("one point $words"),
+            phonemizer.main("1.$fraction", {}).first,
+        )
+    }
+
+    @Test
     fun ordinaryCurrencyAmountsKeepTheirMeaning() {
         val cases = mapOf(
             "0" to "zero dollars",
