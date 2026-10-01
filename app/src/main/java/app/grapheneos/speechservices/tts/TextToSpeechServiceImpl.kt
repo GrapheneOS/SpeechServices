@@ -234,14 +234,17 @@ class TextToSpeechServiceImpl : TextToSpeechService() {
             setPitch(request.pitch / 100F)
         }
 
-        TextSplitter(request.charSequenceText).forEach { chunk ->
+        val phonemeChunks = TextSplitter(request.charSequenceText).asSequence().flatMap { chunk ->
+            cancellationCheck()
+            val phonemeText = voiceResources.englishPhonemizer.get().main(chunk, cancellationCheck)
+            PhonemeSplitter(phonemeText.first).asSequence()
+        }
+        phonemeChunks.forEach { phonemes ->
             cancellationCheck()
 
-            val phonemeText = voiceResources.englishPhonemizer.get().main(chunk, cancellationCheck)
-
-            verboseLog(TAG) { "Queued phonemes: ${phonemeText.first}" }
+            verboseLog(TAG) { "Queued phonemes: $phonemes" }
             val queuePhoneIds =
-                symbolTokenizer.encodeToIds(phonemeText.first)
+                symbolTokenizer.encodeToIds(phonemes)
 
             // Should be set to the input length that's supported by the decoder.
             val yMaxLengthInBatch = 64
