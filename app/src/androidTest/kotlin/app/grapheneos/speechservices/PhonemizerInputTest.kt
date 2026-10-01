@@ -48,6 +48,38 @@ class PhonemizerInputTest {
     }
 
     @Test
+    fun singleFractionalDigitsRepresentTenthsOfTheCurrencyUnit() {
+        assertCurrency("1.5", "$", "one dollar and fifty cents")
+        assertCurrency("-1.5", "$", "minus one dollar and fifty cents")
+        assertCurrency("0.1", "£", "ten pence")
+        assertCurrency(".9", "€", "ninety cents")
+        for (currency in listOf("$", "£", "€")) {
+            for (whole in listOf("0", "1", "-1", "12", "-12", "9223372036854775808")) {
+                for (digit in '0'..'9') {
+                    assertEquals(
+                        "$currency$whole.$digit",
+                        lexicon.getNumber("$whole.${digit}0", currency, true, ""),
+                        lexicon.getNumber("$whole.$digit", currency, true, ""),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun fullPhonemizerScalesSingleFractionalDigits() {
+        for (currency in listOf("$", "£", "€")) {
+            for (amount in listOf("1.5", "-1.5", "0.1", ".9")) {
+                assertEquals(
+                    "$currency$amount",
+                    phonemizer.main("$currency${amount}0", {}).first,
+                    phonemizer.main("$currency$amount", {}).first,
+                )
+            }
+        }
+    }
+
+    @Test
     fun lastSpellableCurrencyAmountIsStillSpelledNormally() {
         assertCurrency(
             "999999999999999999",

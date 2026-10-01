@@ -865,9 +865,11 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 first = false
             }
         } else if (currency in CURRENCIES && this.isCurrency(word)) {
-            var parts =
-                word.replace(",", "").split('.').zip(CURRENCIES[currency]!!).map { (num, unit) ->
-                    CurrencyPart(num, if (num.isEmpty()) 0L else num.toLongOrNull(), unit)
+            var parts = word.replace(",", "").split('.')
+                .zip(CURRENCIES[currency]!!)
+                .mapIndexed { index, (num, unit) ->
+                    val digits = if (index == 1 && num.length == 1) num + "0" else num
+                    CurrencyPart(digits, if (digits.isEmpty()) 0L else digits.toLongOrNull(), unit)
                 }
             if (parts.size > 1) {
                 if (parts[1].value == 0L) {
