@@ -158,6 +158,9 @@ private val CURRENCIES = mutableMapOf(
     "£" to listOf("pound", "pence"),
     "€" to listOf("euro", "cent"),
 )
+private val DIGIT_WORDS = listOf(
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+)
 private val ORDINALS = setOf("st", "nd", "rd", "th")
 
 private val PUNCT_SYMBOLS = mapOf(
@@ -878,11 +881,17 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                     result.add(this.lookup("and", null, null, null))
                 }
                 val numString = part.digits.ifEmpty { "0" }
-                val spelled = numToWords(numString, locale = Locale.ENGLISH)
-                if (part.value != null && spelled.any { it.isLetter() }) {
+                val spelled = if (part.value != null) {
+                    numToWords(numString, locale = Locale.ENGLISH)
+                } else {
+                    ""
+                }
+                if (spelled.any { it.isLetter() }) {
                     extendNum(spelled, first = index == 0, escape = true)
                 } else {
-                    numString.forEach { digit -> extendNum(digit.toString(), first = false) }
+                    numString.forEach { digit ->
+                        result.add(this.lookup(DIGIT_WORDS[digit.digitToInt()], null, null, null))
+                    }
                 }
                 result.add(
                     if (part.value != 1L && part.unit != "pence") {
