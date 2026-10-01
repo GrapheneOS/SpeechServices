@@ -162,6 +162,7 @@ private val DIGIT_WORDS = listOf(
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
 )
 private val ORDINALS = setOf("st", "nd", "rd", "th")
+internal val NUMBER_SUFFIXES = ORDINALS + setOf("ing", "'d", "ed", "'s", "s")
 
 private val PUNCT_SYMBOLS = mapOf(
     "." to "dot",
@@ -766,7 +767,9 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         currency: String?,
         isHead: Boolean?,
         numFlags: String?,
+        cancellationCheck: CancellationCheck = {},
     ): Pair<String?, Int?> {
+        cancellationCheck()
         verboseLog(TAG) {
             "getNumber parameters: word: $word, currency: $currency, isHead: $isHead, numFlags: $numFlags"
         }
@@ -777,6 +780,9 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
             word
         }
         val result = mutableListOf<Pair<String?, Int?>>()
+        // A dotted number can contain many components. Reuse the formatter
+        // within this conversion without sharing mutable ICU state across calls.
+        val numberFormat by lazy { NumToWords(Locale.ENGLISH) }
         if (word.startsWith('-')) {
             result.add(this.lookup("minus", null, null, null))
             word = word.drop(1)
@@ -784,6 +790,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         fun extendWords(words: String, first: Boolean = true) {
             val splits = Regex("""[^a-z]+""").split(words)
             splits.forEachIndexed { splitWordIndex, splitWord ->
+                cancellationCheck()
                 if (splitWord != "and" || numFlags?.contains('&') == true) {
                     if (first &&
                         splitWordIndex == 0 &&
@@ -816,6 +823,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         }
         fun extendDigits(digits: String) {
             digits.forEach { digit ->
+                cancellationCheck()
                 result.add(this.lookup(DIGIT_WORDS[digit.digitToInt()], null, null, null))
             }
         }
@@ -832,7 +840,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
             val hasPoint = integer.isEmpty() || fraction.isNotEmpty()
             // Avoid floating-point conversion of decimals and overflowing integers.
             val spelled = if (value != null) {
-                numToWords(value, locale = Locale.ENGLISH)
+                numberFormat.format(value)
             } else {
                 ""
             }
@@ -849,7 +857,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         fun extendOrdinal(num: String, ordinalSuffix: String) {
             val value = num.toLongOrNull()
             val spelled = if (value != null) {
-                numToWords(value, NumToWordsRuleSet.Ordinal, Locale.ENGLISH)
+                numberFormat.format(value, NumToWordsRuleSet.Ordinal)
             } else {
                 ""
             }
@@ -871,7 +879,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
             isAsciiNumber(word)
         ) {
             extendWords(
-                numToWords(word.toLong(), NumToWordsRuleSet.NumberingYear, Locale.ENGLISH),
+                numberFormat.format(word.toLong(), NumToWordsRuleSet.NumberingYear),
             )
         } else if ((isHead == null || !isHead) && '.' !in word) {
             val num = word.replace(",", "")
@@ -891,6 +899,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         } else if (word.count { c -> c == '.' } > 1 || (isHead == null || !isHead)) {
             var first = true
             for (num in word.replace(",", "").split('.')) {
+                cancellationCheck()
                 if (num.isEmpty()) {
                     // pass
                 } else if (num[0] == '0' ||
@@ -990,14 +999,12 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         }
     }
 
-    private val numberSuffixes = ORDINALS + setOf("ing", "'d", "ed", "'s", "s")
-
     fun isNumber(word: String, isHead: Boolean?): Boolean {
         var word = word
         if (word.all { c -> !c.isAsciiDigit() }) {
             return false
         }
-        for (s in numberSuffixes) {
+        for (s in NUMBER_SUFFIXES) {
             if (word.endsWith(s)) {
                 word = word.dropLast(s.length)
                 break
@@ -1015,7 +1022,11 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
         return true
     }
 
-    fun main(tk: MToken, ctx: TokenContext): Pair<String?, Int?> {
+    fun main(
+        tk: MToken,
+        ctx: TokenContext,
+        cancellationCheck: CancellationCheck = {},
+    ): Pair<String?, Int?> {
         val word = ((tk.more?.get("alias") as String?) ?: tk.text)
             .replace(Char(8216), '\'') // Left Single Quotation Mark ( ‘ )
             .replace(Char(8217), '\'') // Right Single Quotation Mark ( ’ )
@@ -1056,6 +1067,7 @@ class Lexicon(val british: Boolean, initialDictionary: Map<String, DictionaryVal
                 tk.more?.get("currency") as String?,
                 tk.more?.get("isHead") as Boolean?,
                 tk.more?.get("numFlags") as String?,
+                cancellationCheck,
             ).let {
                 phonemes = it.first
                 rating = it.second
@@ -1394,6 +1406,7 @@ class EnglishPhonemizer(
                 tk.more?.get("currency") as String?,
                 tk.more?.get("isHead") as Boolean?,
                 tk.more?.get("numFlags") as String?,
+                cancellationCheck,
             )
         } else {
             (
@@ -1404,7 +1417,7 @@ class EnglishPhonemizer(
                             tk.text.let { it.isNotEmpty() && it.all { c -> c.isUpperCase() } }
                         )
                 ) {
-                    this.fallback.main(tk)
+                    this.fallback.main(tk, cancellationCheck)
                 } else {
                     if (tk.text.all { c -> c.isLetter() }) {
                         lexicon.getPropn(tk.text)
@@ -1475,7 +1488,9 @@ class EnglishPhonemizer(
                     var left = 0
                     var right = word.value.size
                     var shouldFallback = false
+                    val skippedJunkTokens = mutableListOf<MToken>()
                     while (left < right) {
+                        cancellationCheck()
                         val leftRightSublist = word.value.subList(left, right)
                         var tk =
                             if (leftRightSublist.any { tk ->
@@ -1490,7 +1505,7 @@ class EnglishPhonemizer(
                         val (phonemes, rating) = if (tk == null) {
                             Pair(null, null)
                         } else {
-                            this.lexicon.main(tk, ctx)
+                            this.lexicon.main(tk, ctx, cancellationCheck)
                         }
                         if (phonemes != null && tk != null) {
                             word.value[left].phonemes = phonemes
@@ -1511,6 +1526,7 @@ class EnglishPhonemizer(
                                 if (tk.text.all { c -> c in SUBTOKEN_JUNKS }) {
                                     tk.phonemes = ""
                                     tk.more?.set("rating", 3)
+                                    skippedJunkTokens.add(tk)
                                 } else {
                                     shouldFallback = true
                                     break
@@ -1520,8 +1536,13 @@ class EnglishPhonemizer(
                         }
                     }
                     if (shouldFallback) {
+                        // Only a fully resolved compound can discard these separators.
+                        skippedJunkTokens.forEach { it.phonemes = null }
                         verboseLog(TAG) { "fallback tokens: ${word.value}" }
                         for (tk in word.value) {
+                            if (tk.phonemes != null) {
+                                continue
+                            }
                             (this.tokenFallback(tk, cancellationCheck)).let { (phonemes, rating) ->
                                 tk.phonemes = phonemes
                                 tk.more?.set("rating", rating)
@@ -1535,7 +1556,11 @@ class EnglishPhonemizer(
 
                 is RetokenizeValue.MTokenValue -> {
                     if (word.value.phonemes == null) {
-                        this.lexicon.main(word.value.copy(more = word.value.more), ctx)
+                        this.lexicon.main(
+                            word.value.copy(more = word.value.more),
+                            ctx,
+                            cancellationCheck,
+                        )
                             .let { (phonemes, rating) ->
                                 word.value.phonemes = phonemes
                                 word.value.more?.set("rating", rating)
