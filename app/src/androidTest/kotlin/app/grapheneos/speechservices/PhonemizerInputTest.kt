@@ -22,6 +22,83 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class PhonemizerInputTest {
     @Test
+    fun ordinaryCardinalNumbersKeepTheirMeaning() {
+        val cases = mapOf(
+            "0" to "zero",
+            "1" to "one",
+            "-42" to "minus forty two",
+            "101" to "one hundred one",
+            "1,234" to "one thousand two hundred thirty four",
+            "12345" to "twelve thousand three hundred forty five",
+            "00001" to "one",
+            "999999999999999999" to
+                "nine hundred ninety nine quadrillion nine hundred ninety nine trillion " +
+                "nine hundred ninety nine billion nine hundred ninety nine million " +
+                "nine hundred ninety nine thousand nine hundred ninety nine",
+        )
+        for ((number, words) in cases) {
+            assertNumber(number, words)
+        }
+    }
+
+    @Test
+    fun largeCardinalNumbersKeepEveryDigit() {
+        for (number in listOf(
+            "1000000000000000000",
+            "9223372036854775807",
+            "9223372036854775808",
+            "123456789012345678901234567890",
+            "9".repeat(125),
+            "9".repeat(400),
+        )) {
+            val words = number.map { DIGITS[it.digitToInt()] }.joinToString(" ")
+            assertNumber(number, words)
+            assertNumber("-$number", "minus $words")
+            assertNumber("00$number", "zero zero $words")
+            assertNumber(number.reversed().chunked(3).joinToString(",").reversed(), words)
+        }
+    }
+
+    @Test
+    fun otherNumberFormatsKeepTheirMeaning() {
+        val cases = mapOf(
+            "1999" to "nineteen ninety nine",
+            "2026" to "twenty twenty six",
+            "21st" to "twenty first",
+            "1,001st" to "one thousand first",
+            "1.50" to "one point five",
+            ".05" to "point zero five",
+            "12.05" to "twelve point zero five",
+            "1.2.3" to "one two three",
+        )
+        for ((number, words) in cases) {
+            assertNumber(number, words)
+        }
+        assertNumber("123", "one twenty three", isHead = false)
+        assertNumber("12345", "one two three four five", isHead = false)
+    }
+
+    @Test
+    fun fullPhonemizerPreservesLargeCardinalDigits() {
+        for (number in listOf("1000000000000000000", "9223372036854775808")) {
+            val words = number.map { DIGITS[it.digitToInt()] }.joinToString(" ")
+            val cases = mapOf(
+                number to words,
+                "-$number" to "minus $words",
+                number.reversed().chunked(3).joinToString(",").reversed() to words,
+                "The value is $number." to "The value is $words.",
+            )
+            for ((input, expected) in cases) {
+                assertEquals(
+                    input,
+                    phonemizer.main(expected, {}).first,
+                    phonemizer.main(input, {}).first,
+                )
+            }
+        }
+    }
+
+    @Test
     fun ordinaryCurrencyAmountsKeepTheirMeaning() {
         val cases = mapOf(
             "0" to "zero dollars",
@@ -181,6 +258,16 @@ class PhonemizerInputTest {
                 phonemizer.preprocess("[hello]($feature)").third,
             )
         }
+    }
+
+    private fun assertNumber(number: String, words: String, isHead: Boolean = true) {
+        val expected = words.split(' ').joinToString(" ") { word ->
+            val stress = if (word == "point") -2.0 else null
+            requireNotNull(lexicon.getWord(word, "NUM", stress, TokenContext()).first) {
+                "No pronunciation for $word"
+            }
+        }
+        assertEquals(number, expected, lexicon.getNumber(number, null, isHead, "").first)
     }
 
     private fun assertCurrency(amount: String, currency: String, words: String) {
