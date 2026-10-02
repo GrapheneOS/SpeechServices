@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">GrapheneOS Speech Services</string>
+    <string name="settings_about_body">On-device text-to-speech for GrapheneOS. Speech synthesis runs locally on your device.</string>
+    <string name="settings_about_title">About</string>
+    <string name="settings_navigate_up">Navigate up</string>
+    <string name="settings_version_label">Version</string>
+    <string name="settings_version_unknown">Unknown</string>
 </resources>
