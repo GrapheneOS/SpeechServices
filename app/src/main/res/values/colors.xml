@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="settings_accent_color">@android:color/system_primary_light</color>
+    <color name="settings_card_background">@android:color/system_surface_container_light</color>
+</resources>
