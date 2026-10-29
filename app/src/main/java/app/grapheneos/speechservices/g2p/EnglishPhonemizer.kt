@@ -1099,6 +1099,7 @@ class EnglishPhonemizer(
     }
 
     private val whitespaceRegex = Regex("""\s+""")
+    private val newlineRegex = Regex("""[\r\n]+""")
 
     fun preprocess(text: String): Triple<String, List<String>, Map<Int, FeatureValue>> {
         val result = StringBuilder()
@@ -1151,6 +1152,8 @@ class EnglishPhonemizer(
         tokens: List<String>,
         features: Map<Int, FeatureValue>,
     ): List<MToken> {
+        // Matcha has no newline symbol; dropping it cuts the audio off with noise.
+        val text = text.replace(newlineRegex, " ")
         val mutableTokens = run {
             val spans = tokenizer.tokenizePos(text)
             val intermediaryTokens = Span.spansToStrings(spans, text)
