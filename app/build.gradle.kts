@@ -45,7 +45,7 @@ android {
     namespace = "app.grapheneos.speechservices"
     compileSdk = 37
     buildToolsVersion = "36.1.0"
-    ndkVersion = "29.0.14206865"
+    ndkVersion = "30.0.16248370"
 
     defaultConfig {
         applicationId = "app.grapheneos.speechservices"
