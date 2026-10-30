@@ -526,6 +526,14 @@ class PhonemizerInputTest {
     }
 
     @Test
+    fun newlinesArePronouncedAsOneSpace() {
+        assertEquals(
+            phonemizer.main("one two ", {}).first,
+            phonemizer.main("one\r\n\ntwo\n", {}).first,
+        )
+    }
+
+    @Test
     fun linksDoNotIntroduceEmptyTokensOrShiftFeatures() {
         assertEquals(
             Triple("hello", listOf("hello"), mapOf(0 to FeatureValue.IntValue(1))),
